@@ -13,10 +13,12 @@ classes for other XSD built-in types. This subpackage raises only built-in
 exceptions in order to be reusable in other packages.
 """
 from decimal import Decimal
+from typing import Dict, Union
 
 from ..helpers import QNAME_PATTERN  # For backward compatibility
 
-from .atomic_types import xsd10_atomic_types, xsd11_atomic_types, AnyAtomicType
+from .atomic_types import xsd10_atomic_types, xsd11_atomic_types, \
+    AtomicTypeMeta, AnyAtomicType
 from .untyped import UntypedAtomic
 from .qname import Notation, QName
 from .numeric import Float10, Float, Integer, Int, NegativeInteger, \
@@ -29,7 +31,7 @@ from .binary import AbstractBinary, Base64Binary, HexBinary
 from .datetime import AbstractDateTime, DateTime10, DateTime, DateTimeStamp, \
     Date10, Date, GregorianDay, GregorianMonth, GregorianYear, GregorianYear10, \
     GregorianMonthDay, GregorianYearMonth, GregorianYearMonth10, Time, Timezone, \
-    Duration, DayTimeDuration, YearMonthDuration
+    Duration, DayTimeDuration, YearMonthDuration, OrderedDateTime
 from .proxies import BooleanProxy, DecimalProxy, DoubleProxy10, DoubleProxy, \
     StringProxy, NumericProxy, ArithmeticProxy
 
@@ -60,7 +62,16 @@ xsd11_atomic_types.update(
 )
 XSD_BUILTIN_TYPES = xsd10_atomic_types
 
-ATOMIC_VALUES = {
+DatetimeValueType = Union[OrderedDateTime, Date10, Date, DateTime10, DateTime, Time,
+                          GregorianDay, GregorianMonth, GregorianMonthDay, GregorianYear10,
+                          GregorianYear, GregorianYearMonth10, GregorianYearMonth]
+
+AtomicValueType = Union[str, int, float, Decimal, bool, Integer, Float10, NormalizedString,
+                        AnyURI, HexBinary, Base64Binary, QName, AbstractDateTime, Duration,
+                        UntypedAtomic, DatetimeValueType]
+
+
+ATOMIC_VALUES: Dict[str, AtomicValueType] = {
     'untypedAtomic': UntypedAtomic('1'),
     'anyType': UntypedAtomic('1'),
     'anySimpleType': UntypedAtomic('1'),
@@ -110,10 +121,10 @@ ATOMIC_VALUES = {
     'unsignedByte': UnsignedByte(1),
 }
 
-__all__ = ['xsd10_atomic_types', 'xsd11_atomic_types', 'ATOMIC_VALUES', 'XSD_BUILTIN_TYPES',
-           'NumericProxy', 'ArithmeticProxy', 'QNAME_PATTERN', 'AnyAtomicType',
-           'AbstractDateTime', 'DateTime10', 'DateTime', 'DateTimeStamp', 'Date10',
-           'Date', 'Time', 'GregorianDay', 'GregorianMonth', 'GregorianMonthDay',
+__all__ = ['xsd10_atomic_types', 'xsd11_atomic_types', 'AtomicTypeMeta', 'AnyAtomicType',
+           'ATOMIC_VALUES', 'XSD_BUILTIN_TYPES', 'NumericProxy', 'ArithmeticProxy',
+           'QNAME_PATTERN', 'AbstractDateTime', 'DateTime10', 'DateTime', 'DateTimeStamp',
+           'Date10', 'Date', 'Time', 'GregorianDay', 'GregorianMonth', 'GregorianMonthDay',
            'GregorianYear10', 'GregorianYear', 'GregorianYearMonth10', 'GregorianYearMonth',
            'Timezone', 'Duration', 'YearMonthDuration', 'DayTimeDuration', 'StringProxy',
            'NormalizedString', 'XsdToken', 'Language', 'Name', 'NCName', 'Id', 'Idref',
@@ -121,4 +132,5 @@ __all__ = ['xsd10_atomic_types', 'xsd11_atomic_types', 'ATOMIC_VALUES', 'XSD_BUI
            'Integer', 'NonPositiveInteger', 'NegativeInteger', 'Long', 'Int', 'Short',
            'Byte', 'NonNegativeInteger', 'PositiveInteger', 'UnsignedLong', 'UnsignedInt',
            'UnsignedShort', 'UnsignedByte', 'AnyURI', 'Notation', 'QName', 'BooleanProxy',
-           'DecimalProxy', 'DoubleProxy10', 'DoubleProxy', 'UntypedAtomic', 'AbstractBinary']
+           'DecimalProxy', 'DoubleProxy10', 'DoubleProxy', 'UntypedAtomic', 'AbstractBinary',
+           'AtomicValueType', 'DatetimeValueType', 'OrderedDateTime']
