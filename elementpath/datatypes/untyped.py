@@ -10,6 +10,8 @@
 import operator
 from decimal import Decimal
 from typing import Any, Tuple, Union
+
+from ..helpers import BOOLEAN_VALUES
 from .atomic_types import AtomicTypeMeta, AnyAtomicType
 
 
@@ -66,13 +68,13 @@ class UntypedAtomic(metaclass=AtomicTypeMeta):
         elif isinstance(other, bool):
             # Cast to xs:boolean
             value = self.value.strip()
-            if value not in {'0', '1', 'true', 'false'}:
+            if value not in BOOLEAN_VALUES:
                 raise ValueError("{!r} cannot be cast to xs:boolean".format(self.value))
             return value in ('1', 'true'), other
         elif isinstance(other, int):
             return float(self.value), other
-        elif isinstance(other, str):
-            return str(self.value), other
+        elif other is None or isinstance(other, (str, list)):
+            return self.value, other
 
         try:
             return type(other).fromstring(self.value), other

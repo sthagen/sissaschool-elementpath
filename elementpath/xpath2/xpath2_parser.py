@@ -21,11 +21,11 @@ from ..helpers import normalize_sequence_type
 from ..exceptions import ElementPathError, ElementPathTypeError, \
     ElementPathValueError, MissingContextError, xpath_error
 from ..namespaces import NamespacesType, XSD_NAMESPACE, XML_NAMESPACE, \
-    XLINK_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, XQT_ERRORS_NAMESPACE, \
+    XPATH_FUNCTIONS_NAMESPACE, XQT_ERRORS_NAMESPACE, \
     XSD_NOTATION, XSD_ANY_ATOMIC_TYPE, get_prefixed_name
 from ..datatypes import UntypedAtomic, AtomicValueType, QName
-from ..xpath_token import UNICODE_CODEPOINT_COLLATION, XPathToken, \
-    XPathFunction, XPathConstructor
+from ..xpath_token import UNICODE_CODEPOINT_COLLATION, NargsType, \
+    XPathToken, XPathFunction, XPathConstructor
 from ..xpath_context import XPathContext
 from ..schema_proxy import AbstractSchemaProxy
 from ..xpath1 import XPath1Parser
@@ -175,7 +175,7 @@ class XPath2Parser(XPath1Parser):
     DEFAULT_NAMESPACES: ClassVar[Dict[str, str]] = {
         'xml': XML_NAMESPACE,
         'xs': XSD_NAMESPACE,
-        'xlink': XLINK_NAMESPACE,
+        # 'xlink': XLINK_NAMESPACE,
         'fn': XPATH_FUNCTIONS_NAMESPACE,
         'err': XQT_ERRORS_NAMESPACE
     }
@@ -183,6 +183,13 @@ class XPath2Parser(XPath1Parser):
     PATH_STEP_LABELS = ('axis', 'function', 'kind test')
     PATH_STEP_SYMBOLS = {
         '(integer)', '(string)', '(float)', '(decimal)', '(name)', '*', '@', '..', '.', '(', '{'
+    }
+
+    # https://www.w3.org/TR/xpath20/#id-reserved-fn-names
+    RESERVED_FUNCTION_NAMES = {
+        'attribute', 'comment', 'document-node', 'element', 'empty-sequence',
+        'if', 'item', 'node', 'processing-instruction', 'schema-attribute',
+        'schema-element', 'text', 'typeswitch',
     }
 
     function_signatures: Dict[Tuple[QName, int], str] = XPath1Parser.function_signatures.copy()
@@ -319,7 +326,7 @@ class XPath2Parser(XPath1Parser):
         return self.next_token
 
     @classmethod
-    def constructor(cls, symbol: str, bp: int = 0, nargs: int = 1,
+    def constructor(cls, symbol: str, bp: int = 0, nargs: NargsType = 1,
                     sequence_types: Union[Tuple[()], Tuple[str, ...], List[str]] = (),
                     label: Union[str, Tuple[str, ...]] = 'constructor function') \
             -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -334,6 +341,9 @@ class XPath2Parser(XPath1Parser):
                 self.value = None
             except SyntaxError:
                 raise self.error('XPST0017') from None
+
+            if self[0].symbol == '?':
+                self._partial_function()
             return self
 
         def evaluate_(self: XPathConstructor, context: Optional[XPathContext] = None) \
@@ -341,6 +351,8 @@ class XPath2Parser(XPath1Parser):
             arg = self.data_value(self.get_argument(context))
             if arg is None:
                 return []
+            elif arg == '?' and self[0].symbol == '?':
+                raise self.error('XPTY0004', "cannot evaluate a partial function")
 
             try:
                 if isinstance(arg, UntypedAtomic):
@@ -370,7 +382,7 @@ class XPath2Parser(XPath1Parser):
     def schema_constructor(self, atomic_type_name: str, bp: int = 90) \
             -> Type[XPathFunction]:
         """Registers a token class for a schema atomic type constructor function."""
-        if atomic_type_name in {XSD_ANY_ATOMIC_TYPE, XSD_NOTATION}:
+        if atomic_type_name in (XSD_ANY_ATOMIC_TYPE, XSD_NOTATION):
             raise xpath_error('XPST0080')
 
         def nud_(self_: XPathFunction) -> XPathFunction:
@@ -423,7 +435,7 @@ class XPath2Parser(XPath1Parser):
 
     def parse(self, source: str) -> XPathToken:
         root_token = super(XPath1Parser, self).parse(source)
-        if root_token.label == 'sequence type':
+        if root_token.label in ('sequence type', 'function test'):
             raise root_token.error('XPST0003', "not allowed in XPath expression")
 
         if self.schema is None:

@@ -226,6 +226,15 @@ class AbstractDateTime(metaclass=AtomicTypeMeta):
     def tzinfo(self, tz: Timezone) -> None:
         self._dt = self._dt.replace(tzinfo=tz)
 
+    def tzname(self) -> Optional[str]:
+        return self._dt.tzname()
+
+    def astimezone(self, tz: Optional[datetime.tzinfo] = None) -> datetime.datetime:
+        return self._dt.astimezone(tz)
+
+    def isocalendar(self) -> Tuple[int, int, int]:
+        return self._dt.isocalendar()
+
     @classmethod
     def fromstring(cls, datetime_string: str, tzinfo: Optional[Timezone] = None) \
             -> 'AbstractDateTime':
@@ -302,7 +311,8 @@ class AbstractDateTime(metaclass=AtomicTypeMeta):
     def _get_operands(self, other: object) -> Tuple[datetime.datetime, datetime.datetime]:
         if isinstance(other, (self.__class__, datetime.datetime)) or \
                 isinstance(self, other.__class__):
-            dt = getattr(other, '_dt', other)
+            dt: datetime.datetime = getattr(other, '_dt', cast(datetime.datetime, other))
+
             if self._dt.tzinfo is dt.tzinfo:
                 return self._dt, dt
             elif self.tzinfo is None:
@@ -536,7 +546,7 @@ class DateTime10(OrderedDateTime):
             return '{}-{:02}-{:02}T{:02}:{:02}:{:02}.{}{}'.format(
                 self.iso_year, self.month, self.day, self.hour, self.minute, self.second,
                 '{:06}'.format(self.microsecond).rstrip('0'), str(self.tzinfo or '')
-            ).rstrip('0')
+            )
         return '{}-{:02}-{:02}T{:02}:{:02}:{:02}{}'.format(
             self.iso_year, self.month, self.day, self.hour,
             self.minute, self.second, str(self.tzinfo or '')

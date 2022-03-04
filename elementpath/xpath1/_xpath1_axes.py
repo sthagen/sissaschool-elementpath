@@ -12,8 +12,9 @@
 XPath 1.0 implementation - part 4 (axes)
 """
 from ..exceptions import ElementPathTypeError
+from ..namespaces import XML_NAMESPACE
 from ..xpath_nodes import NamespaceNode, is_element_node
-from .xpath1_functions import XPath1Parser
+from ._xpath1_functions import XPath1Parser
 
 method = XPath1Parser.method
 axis = XPath1Parser.axis
@@ -46,19 +47,25 @@ def select_namespace_axis(self, context=None):
         raise self.missing_context()
     elif is_element_node(context.item):
         elem = context.item
-        namespaces = self.parser.namespaces
+        if self[0].symbol == 'namespace-node':
+            name = '*'
+        else:
+            name = self[0].value
 
-        for prefix_, uri in namespaces.items():
-            context.item = NamespaceNode(prefix_, uri)
-            yield context.item
+        nsmap = getattr(elem, 'nsmap', None)
+        if nsmap is None:
+            # missing in-scope namespaces, use static provided namespaces.
+            nsmap = self.parser.other_namespaces
 
-        if hasattr(elem, 'nsmap'):
-            # Add element's namespaces for lxml (and use None for default namespace)
-            # noinspection PyUnresolvedReferences
-            for prefix_, uri in elem.nsmap.items():
-                if prefix_ not in namespaces:
-                    context.item = NamespaceNode(prefix_, uri, elem)
-                    yield context.item
+        for pfx, uri in nsmap.items():
+            if name == '*' or name == pfx:
+                context.item = NamespaceNode(pfx, uri, elem)
+                yield context.item
+
+        if 'xml' not in nsmap:
+            if name == '*' or name == 'xml':
+                context.item = NamespaceNode('xml', XML_NAMESPACE, elem)
+                yield context.item
 
 
 @method(axis('self'))

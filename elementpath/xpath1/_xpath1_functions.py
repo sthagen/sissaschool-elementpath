@@ -17,10 +17,11 @@ import decimal
 from ..datatypes import Duration, DayTimeDuration, YearMonthDuration, \
     StringProxy, AnyURI, Float10
 from ..namespaces import XML_ID, XML_LANG, get_prefixed_name
-from ..xpath_nodes import XPathNode, TextNode, is_xpath_node, is_document_node, \
+from ..xpath_nodes import TextNode, is_xpath_node, is_document_node, \
     is_element_node, is_comment_node, is_processing_instruction_node, node_name
+from ..xpath_token import XPathFunction
 
-from .xpath1_operators import XPath1Parser
+from ._xpath1_operators import XPath1Parser
 
 method = XPath1Parser.method
 function = XPath1Parser.function
@@ -32,30 +33,41 @@ function = XPath1Parser.function
 def select_node_kind_test(self, context=None):
     if context is None:
         raise self.missing_context()
-    else:
-        for item in context.iter_children_or_self():
-            if item is None:
-                yield context.root
-            elif is_xpath_node(item):
-                yield item
+
+    for item in context.iter_children_or_self():
+        if item is None:
+            yield context.root
+        elif is_xpath_node(item):
+            yield item
 
 
-@method(function('processing-instruction', nargs=(0, 1), label='kind test'))
+@method('node')
+def nud_item_sequence_type(self):
+    XPathFunction.nud(self)
+    if self.parser.next_token.symbol in ('*', '+', '?'):
+        self.occurrence = self.parser.next_token.symbol
+        self.parser.advance()
+    return self
+
+
+@method(function('processing-instruction', nargs=(0, 1), bp=79, label='kind test'))
 def select_pi_kind_test(self, context=None):
     if context is None:
         raise self.missing_context()
-    elif is_processing_instruction_node(context.item):
-        if not self:
-            yield context.item
-        else:
-            arg = self.get_argument(context, cls=str)
-            if hasattr(context.item, 'target'):
-                target = context.item.target
-            else:
-                target = context.item.text.split()[0] if context.item.text else ''
 
-            if target == ' '.join(arg.strip().split()):
-                yield context.item
+    for item in context.iter_children_or_self():
+        if is_processing_instruction_node(item):
+            if not self:
+                yield item
+            else:
+                name = self[0].value
+                if hasattr(item, 'target'):
+                    target = item.target
+                else:
+                    target = item.text.split()[0] if item.text else ''
+
+                if target == ' '.join(name.strip().split()):
+                    yield item
 
 
 @method('processing-instruction')
@@ -73,18 +85,20 @@ def nud_pi_kind_test(self):
 def select_comment_kind_test(self, context=None):
     if context is None:
         raise self.missing_context()
-    elif is_comment_node(context.item):
-        yield context.item
+
+    for item in context.iter_children_or_self():
+        if is_comment_node(item):
+            yield item
 
 
 @method(function('text', nargs=0, label='kind test'))
 def select_text_kind_test(self, context=None):
     if context is None:
         raise self.missing_context()
-    else:
-        for item in context.iter_children_or_self():
-            if isinstance(item, TextNode):
-                yield item
+
+    for item in context.iter_children_or_self():
+        if isinstance(item, TextNode):
+            yield item
 
 
 ###
@@ -142,7 +156,8 @@ def evaluate_name_related_functions(self, context=None):
 
     symbol = self.symbol
     if symbol == 'name':
-        return get_prefixed_name(name, self.parser.namespaces)
+        nsmap = getattr(arg, 'nsmap', self.parser.namespaces)
+        return get_prefixed_name(name, nsmap)
     elif symbol == 'local-name':
         return name if not name or name[0] != '{' else name.split('}')[1]
     elif self.parser.version == '1.0':
@@ -341,7 +356,14 @@ def evaluate_number_function(self, context=None):
 @method(function('sum', nargs=(1, 2),
                  sequence_types=('xs:anyAtomicType*', 'xs:anyAtomicType?', 'xs:anyAtomicType?')))
 def evaluate_sum_function(self, context=None):
-    values = [x.value if isinstance(x, XPathNode) else x for x in self[0].select(context)]
+    try:
+        values = [float(self.string_value(x)) if is_xpath_node(x) else x
+                  for x in self[0].select(context)]
+    except (TypeError, ValueError):
+        if self.parser.version == '1.0':
+            return float('nan')
+        raise self.error('FORG0006') from None
+
     if not values:
         zero = 0 if len(self) == 1 else self.get_argument(context, index=1)
         return [] if zero is None else zero

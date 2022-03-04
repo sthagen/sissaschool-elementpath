@@ -13,9 +13,9 @@ XPath 3.0 implementation - part 2 (symbols, operators and expressions)
 """
 from copy import copy
 
-from ..namespaces import XPATH_FUNCTIONS_NAMESPACE
+from ..namespaces import XPATH_FUNCTIONS_NAMESPACE, XSD_NAMESPACE
 from ..xpath_nodes import TypedElement, TypedAttribute, XPathNode
-from ..xpath_token import ValueToken, XPathFunction
+from ..xpath_token import XPathToken, ValueToken, XPathFunction
 from ..xpath_context import XPathSchemaContext
 from ..datatypes import QName
 
@@ -28,18 +28,28 @@ method = XPath30Parser.method
 
 register(':=')
 
+###
+# Placeholder symbol (used also for optional occurrence)
+
 XPath30Parser.unregister('?')
 register('?', bases=(ValueToken,))
 
 
 @method('?')
-def nud_optional_symbol(self):
+def nud_placeholder_symbol(self):
+    # self.value = self
+    return self
+
+
+@method('?')
+def evaluate_placeholder_symbol(self, context=None):
     return self
 
 
 ###
 # Braced/expanded QName(s)
-XPath30Parser.duplicate('{', 'Q{')
+
+XPath30Parser.duplicate('{', 'Q{', pattern=r'Q\{')
 XPath30Parser.unregister('{')
 XPath30Parser.unregister('}')
 register('{')
@@ -59,8 +69,19 @@ def nud_parenthesized_expression(self):
 
 @method('(')
 def led_parenthesized_expression(self, left):
-    if left.symbol == '(name)' or left.symbol == ':' and left[1].symbol == '(name)':
-        raise self.error('XPST0017', 'unknown function {!r}'.format(left.value))
+    if left.symbol == '(name)':
+        if left.value in self.parser.RESERVED_FUNCTION_NAMES:
+            msg = f"{left.value!r} is not allowed as function name"
+            raise left.error('XPST0003', msg)
+        else:
+            raise left.error('XPST0017', 'unknown function {!r}'.format(left.value))
+
+    elif left.symbol == ':' and left[1].symbol == '(name)':
+        if left[1].namespace == XSD_NAMESPACE:
+            msg = 'unknown constructor function {!r}'.format(left[1].value)
+            raise left[1].error('XPST0017', msg)
+        raise left.error('XPST0017', 'unknown function {!r}'.format(left.value))
+
     if self.parser.next_token.symbol != ')':
         self[:] = left, self.parser.expression()
     else:
@@ -71,32 +92,31 @@ def led_parenthesized_expression(self, left):
 
 @method('(')
 def evaluate_parenthesized_expression(self, context=None):
-    if len(self) < 2:
-        return self[0].evaluate(context) if self else []
+    if not self:
+        return []
 
-    result = self[0].evaluate(context)
-    if isinstance(result, list) and len(result) == 1:
-        result = result[0]
+    value = self[0].evaluate(context)
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
 
-    if not isinstance(result, XPathFunction):
-        raise self.error('XPST0017', 'an XPath function expected, not {!r}'.format(type(result)))
-    return result(context, self[1])
+    if len(self) > 1:
+        if isinstance(value, XPathFunction):
+            return value(context, self[1])
+        elif self[0].symbol == '(':
+            if not isinstance(value, list):
+                return value
+            elif any(not isinstance(x, XPathFunction) for x in value):
+                return value
 
+        if isinstance(value, XPathToken) and value.symbol == '?':
+            return value
 
-@method('(')
-def select_parenthesized_expression(self, context=None):
-    if len(self) < 2:
-        yield from self[0].select(context) if self else iter(())
+        raise self.error('XPTY0004', f'an XPath function expected, not {type(value)!r}')
+
+    if not isinstance(value, XPathFunction) or self[0].span[0] > self.span[0]:
+        return value
     else:
-
-        value = self[0].evaluate(context)
-        if not isinstance(value, XPathFunction):
-            raise self.error('XPST0017', 'an XPath function expected, not {!r}'.format(type(value)))
-        result = value(context, self[1])
-        if isinstance(result, list):
-            yield from result
-        else:
-            yield result
+        return value(context)
 
 
 @method(infix('||', bp=32))
@@ -156,14 +176,15 @@ def select_let_expression(self, context=None):
         raise self.missing_context()
 
     context = copy(context)
-    varnames = [self[k][0].value for k in range(0, len(self) - 1, 2)]
-    values = [self[k].evaluate(copy(context)) for k in range(1, len(self) - 1, 2)]
+    for k in range(0, len(self) - 1, 2):
+        varname = self[k][0].value
+        value = self[k+1].evaluate(context)
+        context.variables[varname] = value
 
-    context.variables.update(x for x in zip(varnames, values))
     yield from self[-1].select(context)
 
 
-@method('#', bp=50)
+@method('#', bp=90)
 def led_function_reference(self, left):
     left.expected(':', '(name)', 'Q{')
     self[:] = left, self.parser.expression(rbp=90)
@@ -177,18 +198,44 @@ def evaluate_function_reference(self, context=None):
         qname = QName(self[0][1].namespace, self[0].value)
     elif self[0].symbol == 'Q{':
         qname = QName(self[0][0].value, self[0][1].value)
+    elif self[0].value in self.parser.RESERVED_FUNCTION_NAMES:
+        msg = f"{self[0].value!r} is not allowed as function name"
+        raise self.error('XPST0003', msg)
     else:
         qname = QName(XPATH_FUNCTIONS_NAMESPACE, self[0].value)
-    arity = self[1].value
 
-    # TODO: complete function signatures
-    # if (qname, arity) not in self.parser.function_signatures:
-    #    raise self.error('XPST0017')
+    arity = self[1].value
+    namespace = qname.namespace
+    local_name = qname.local_name
+
+    # Generic rule for XSD constructor functions
+    if namespace == XSD_NAMESPACE and arity != 1:
+        raise self.error('XPST0017', f"unknown function {qname.qname}#{arity}")
+
+    # Special checks for multirole tokens
+    if namespace == XPATH_FUNCTIONS_NAMESPACE and \
+            local_name in ('QName', 'dateTime') and arity == 1:
+        raise self.error('XPST0017', f"unknown function {qname.qname}#{arity}")
 
     try:
-        return self.parser.symbol_table[qname.local_name](self.parser, nargs=arity)
-    except (KeyError, TypeError):
-        raise self.error('XPST0017', "unknown function {}".format(qname.local_name))
+        token_class = self.parser.symbol_table[local_name]
+    except KeyError:
+        msg = f"unknown function {qname.qname}#{arity}"
+        raise self.error('XPST0017', msg) from None
+    else:
+        if token_class.symbol == 'function' or not token_class.label.endswith('function'):
+            raise self.error('XPST0003')
 
+    try:
+        func = token_class(self.parser, nargs=arity)
+    except TypeError:
+        msg = f"unknown function {qname.qname}#{arity}"
+        raise self.error('XPST0017', msg) from None
+    else:
+        if func.namespace is None:
+            func.namespace = namespace
+        elif func.namespace != namespace:
+            raise self.error('XPST0017', f"unknown function {qname.qname}#{arity}")
+        return func
 
 # XPath 3.0 definitions continue into module xpath3_functions

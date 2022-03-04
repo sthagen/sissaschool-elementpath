@@ -8,7 +8,7 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 import re
-from typing import Dict, Tuple, MutableMapping
+from typing import cast, Dict, Optional, Tuple, MutableMapping, Union
 
 NamespacesType = MutableMapping[str, str]
 
@@ -21,6 +21,7 @@ EXPANDED_NAME_PATTERN = re.compile(
 
 # Namespaces
 XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
+XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/"  # Used in DOM for xmlns declarations
 XSD_NAMESPACE = "http://www.w3.org/2001/XMLSchema"
 XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
 XLINK_NAMESPACE = "http://www.w3.org/1999/xlink"
@@ -55,9 +56,15 @@ XSD_ID = '{%s}ID' % XSD_NAMESPACE
 XSD_IDREF = '{%s}IDREF' % XSD_NAMESPACE
 XSD_IDREFS = '{%s}IDREFS' % XSD_NAMESPACE
 
+XSD_STRING = '{%s}string' % XSD_NAMESPACE
+XSD_FLOAT = '{%s}float' % XSD_NAMESPACE
+XSD_DOUBLE = '{%s}double' % XSD_NAMESPACE
+XSD_DECIMAL = '{%s}decimal' % XSD_NAMESPACE
+
 # XPath type labels defined in XSD namespace that are not XSD builtin types
 XSD_UNTYPED = '{%s}untyped' % XSD_NAMESPACE
 XSD_UNTYPED_ATOMIC = '{%s}untypedAtomic' % XSD_NAMESPACE
+XSD_ERROR = '{%s}error' % XSD_NAMESPACE
 
 
 def get_namespace(name: str) -> str:
@@ -75,7 +82,8 @@ def split_expanded_name(name: str) -> Tuple[str, str]:
     return namespace or '', local_name
 
 
-def get_prefixed_name(qname: str, namespaces: Dict[str, str]) -> str:
+def get_prefixed_name(
+        qname: str, namespaces: Union[Dict[str, str], Dict[Optional[str], str]]) -> str:
     """
     Get the prefixed form of a QName, using a namespace map.
 
@@ -94,14 +102,16 @@ def get_prefixed_name(qname: str, namespaces: Dict[str, str]) -> str:
     except (ValueError, TypeError):
         raise ValueError("{!r} is not a QName".format(qname))
 
-    for prefix, uri in sorted(namespaces.items(), reverse=True):
+    for prefix, uri in sorted(namespaces.items(), reverse=True,
+                              key=lambda x: x if x[0] is not None else ('', x[1])):
         if uri == ns_uri:
             return '%s:%s' % (prefix, local_name) if prefix else local_name
     else:
         return qname
 
 
-def get_expanded_name(qname: str, namespaces: Dict[str, str]) -> str:
+def get_expanded_name(
+        qname: str, namespaces: Union[Dict[str, str], Dict[Optional[str], str]]) -> str:
     """
     Get the expanded form of a QName, using a namespace map.
     Local names are mapped to the default namespace.
@@ -121,12 +131,14 @@ def get_expanded_name(qname: str, namespaces: Dict[str, str]) -> str:
     except ValueError:
         if ':' in qname:
             raise ValueError("wrong format for prefixed QName %r" % qname)
-        try:
+        elif '' in namespaces:
             uri = namespaces['']
-        except KeyError:
-            return qname
+        elif None in namespaces:
+            uri = cast(Dict[Optional[str], str], namespaces)[None]  # lxml nsmap
         else:
-            return '{%s}%s' % (uri, qname) if uri else qname
+            return qname
+
+        return '{%s}%s' % (uri, qname) if uri else qname
     else:
         if not prefix or not local_name:
             raise ValueError("wrong format for reference name %r" % qname)

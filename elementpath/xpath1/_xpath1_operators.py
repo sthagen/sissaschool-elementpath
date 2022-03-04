@@ -16,15 +16,16 @@ import decimal
 import operator
 from copy import copy
 
-from ..exceptions import ElementPathKeyError
+from ..datatypes import AnyURI
+from ..exceptions import ElementPathKeyError, ElementPathTypeError
+from ..helpers import collapse_white_spaces
 from ..datatypes import AbstractDateTime, Duration, DayTimeDuration, \
     YearMonthDuration, NumericProxy, ArithmeticProxy
 from ..xpath_context import XPathSchemaContext
-from ..namespaces import XSD_NAMESPACE
+from ..namespaces import XMLNS_NAMESPACE, XSD_NAMESPACE
 from ..schema_proxy import AbstractSchemaProxy
 from ..xpath_nodes import XPathNode, TypedElement, AttributeNode, TypedAttribute, \
-    is_xpath_node, match_element_node, is_schema_node, is_document_node, \
-    match_attribute_node, is_element_node
+    is_xpath_node, is_schema_node, is_document_node, is_element_node
 
 from .xpath1_parser import XPath1Parser
 
@@ -49,22 +50,19 @@ axis = XPath1Parser.axis
 
 @method(register('(name)', bp=10, label='literal'))
 def nud_name_literal(self):
-    if self.parser.next_token.symbol == '(':
-        if self.parser.version >= '3.0':
-            pass
+    if self.parser.next_token.symbol == '::':
+        raise self.missing_axis("axis '%s::' not found" % self.value)
+    elif self.parser.next_token.symbol == '(':
+        if self.parser.version >= '2.0':
+            pass  # XP30+ has led() for '(' operator that can check this
         elif self.namespace == XSD_NAMESPACE:
             raise self.error('XPST0017', 'unknown constructor function {!r}'.format(self.value))
-        elif self.value not in self.parser.RESERVED_FUNCTION_NAMES:
+        elif self.namespace or self.value not in self.parser.RESERVED_FUNCTION_NAMES:
             raise self.error('XPST0017', 'unknown function {!r}'.format(self.value))
-        elif self.value == 'typeswitch':
-            msg = 'improper use of XQuery reserved name {!r}'
-            raise self.error('XPST0003', msg.format(self.value))
         else:
-            msg = 'improper use of XPath reserved name {!r}'
-            raise self.error('XPST0017', msg.format(self.value))
+            msg = f"{self.value!r} is not allowed as function name"
+            raise self.error('XPST0003', msg)
 
-    elif self.parser.next_token.symbol == '::':
-        raise self.missing_axis("axis '%s::' not found" % self.value)
     return self
 
 
@@ -78,16 +76,12 @@ def select_name_literal(self, context=None):
     if context is None:
         raise self.missing_context()
 
-    name = self.value
-
     if isinstance(context, XPathSchemaContext):
-        yield from self.select_xsd_nodes(context, name)
+        yield from self.select_xsd_nodes(context, self.value)
         return
 
-    if name[0] == '{' or not self.parser.default_namespace:
-        tag = name
-    else:
-        tag = '{%s}%s' % (self.parser.default_namespace, name)
+    name = self.value
+    default_namespace = self.parser.default_namespace
 
     # With an ElementTree context checks if the token is bound to an XSD type. If not
     # try a match using the element path. If this match fails the xsd_type attribute
@@ -96,31 +90,42 @@ def select_name_literal(self, context=None):
 
         # Untyped selection
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, name) or match_element_node(item, tag):
+            if hasattr(item, 'nsmap') and None in item.nsmap and self.parser.version != '1.0':
+                default_namespace = item.nsmap[None]
+
+            if context.match_name(name, default_namespace):
                 yield item
 
     elif self.xsd_types is None or isinstance(self.xsd_types, AbstractSchemaProxy):
 
         # Try to match the type using the item's path
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, name) or match_element_node(item, tag):
+            if hasattr(item, 'nsmap') and None in item.nsmap and self.parser.version != '1.0':
+                default_namespace = item.nsmap[None]
+
+            if context.match_name(name, default_namespace):
                 if isinstance(item, (TypedAttribute, TypedElement)):
                     yield item
                 else:
                     path = context.get_path(item)
 
                     xsd_node = self.parser.schema.find(path, self.parser.namespaces)
-                    if xsd_node is not None:
-                        self.xsd_types = {tag: xsd_node.type}
-                    else:
+                    if xsd_node is None:
                         self.xsd_types = self.parser.schema
+                    elif isinstance(item, AttributeNode):
+                        self.xsd_types = {item.name: xsd_node.type}
+                    else:
+                        self.xsd_types = {item.tag: xsd_node.type}
 
                     context.item = self.get_typed_node(item)
                     yield context.item
     else:
         # XSD typed selection
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, name) or match_element_node(item, tag):
+            if hasattr(item, 'nsmap') and None in item.nsmap and self.parser.version != '1.0':
+                default_namespace = item.nsmap[None]
+
+            if context.match_name(name, default_namespace):
                 if isinstance(item, (TypedAttribute, TypedElement)):
                     yield item
                 else:
@@ -193,12 +198,12 @@ def select_namespace_prefix(self, context=None):
 
     elif self.xsd_types is self.parser.schema:
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, name) or match_element_node(item, name):
+            if context.match_name(name):
                 yield item
 
     elif self.xsd_types is None or isinstance(self.xsd_types, AbstractSchemaProxy):
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, name) or match_element_node(item, name):
+            if context.match_name(name):
                 if isinstance(item, (TypedAttribute, TypedElement)):
                     yield item
                 else:
@@ -215,7 +220,7 @@ def select_namespace_prefix(self, context=None):
     else:
         # XSD typed selection
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, name) or match_element_node(item, name):
+            if context.match_name(name):
                 if isinstance(item, (TypedAttribute, TypedElement)):
                     yield item
                 else:
@@ -230,7 +235,23 @@ def nud_namespace_uri(self):
     if self.parser.strict and self.symbol == '{':
         raise self.wrong_syntax("not allowed symbol if parser has strict=True")
 
-    namespace = self.parser.next_token.value + self.parser.advance_until('}')
+    self.parser.next_token.unexpected('{')
+    if self.parser.next_token.symbol == '}':
+        namespace = ''
+    else:
+        namespace = self.parser.next_token.value + self.parser.advance_until('}')
+        namespace = collapse_white_spaces(namespace)
+
+    try:
+        AnyURI(namespace)
+    except ValueError as err:
+        msg = f"invalid URI in an EQName: {str(err)}"
+        raise self.error('XQST0046', msg) from None
+
+    if namespace == XMLNS_NAMESPACE:
+        msg = f"cannot use the URI {XMLNS_NAMESPACE!r}!r in an EQName"
+        raise self.error('XQST0070', msg)
+
     self.parser.advance()
     if not self.parser.next_token.label.endswith('function'):
         self.parser.expected_name('(name)', '*')
@@ -239,8 +260,8 @@ def nud_namespace_uri(self):
     self[:] = self.parser.symbol_table['(string)'](self.parser, namespace), \
         self.parser.expression(90)
 
-    if self[1].value is None:
-        self.value = None
+    if self[1].value is None or not self[0].value:
+        self.value = self[1].value
     else:
         self.value = '{%s}%s' % (self[0].value, self[1].value)
     return self
@@ -266,14 +287,12 @@ def select_namespace_uri(self, context=None):
 
     elif self.xsd_types is None:
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, self.value):
-                yield item
-            elif match_element_node(item, self.value):
+            if context.match_name(self.value):
                 yield item
     else:
         # XSD typed selection
         for item in context.iter_children_or_self():
-            if match_attribute_node(item, self.value) or match_element_node(item, self.value):
+            if context.match_name(self.value):
                 if isinstance(item, (TypedAttribute, TypedElement)):
                     yield item
                 else:
@@ -383,11 +402,7 @@ def select_self_shortcut(self, context=None):
 def select_parent_shortcut(self, context=None):
     if context is None:
         raise self.missing_context()
-    else:
-        parent = context.get_parent(context.item)
-        if is_element_node(parent):
-            context.item = parent
-            yield parent
+    yield from context.iter_parent()
 
 
 ###
@@ -429,6 +444,8 @@ def evaluate_comparison_operators(self, context=None):
     op = OPERATORS_MAP[self.symbol]
     try:
         return any(op(x1, x2) for x1, x2 in self.iter_comparison_data(context))
+    except ElementPathTypeError:
+        raise
     except TypeError as err:
         raise self.error('XPTY0004', err) from None
     except ValueError as err:
@@ -594,7 +611,7 @@ def nud_logical_div_mod_operators(self):
 @method('|', bp=50)
 def led_union_operator(self, left):
     self.cut_and_sort = True
-    if left.symbol in {'|', 'union'}:
+    if left.symbol in ('|', 'union'):
         left.cut_and_sort = False
     self[:] = left, self.parser.expression(rbp=50)
     return self
@@ -690,27 +707,59 @@ def select_child_path(self, context=None):
 
 @method('//')
 def select_descendant_path(self, context=None):
-    # Note: // is short for /descendant-or-self::node()/, so the axis
-    #   is left to None. Use descendant:: only if next-step uses child
-    #   axis, to preserve document order.
+    """Operator '//' is a short equivalent to /descendant-or-self::node()/"""
     if context is None:
         raise self.missing_context()
     elif len(self) == 2:
-        _axis = 'descendant' if self[1].child_axis else None
-
-        for context.item in self[0].select(context):
+        items = set()
+        for _ in context.inner_focus_select(self[0]):
             if not is_xpath_node(context.item):
                 raise self.error('XPTY0019')
 
-            for _ in context.iter_descendants(axis=_axis, inner_focus=True):
-                yield from self[1].select(context)
+            for _ in context.iter_descendants():
+                inner_context = copy(context)
+                for result in self[1].select(inner_context):
+                    if not isinstance(result, (tuple, XPathNode)) and not hasattr(result, 'tag'):
+                        yield result
+                    elif result in items:
+                        pass
+                    elif isinstance(result, TypedElement):
+                        if result.elem not in items:
+                            items.add(result)
+                            yield result
+                    elif isinstance(result, TypedAttribute):
+                        if result.attribute not in items:
+                            items.add(result)
+                            yield result
+                    else:
+                        items.add(result)
+                        yield result
+                        if isinstance(context, XPathSchemaContext):
+                            self[1].add_xsd_type(result)
 
     elif is_document_node(context.root) or context.item is context.root:
         context.item = None
-        _axis = 'descendant' if self[0].child_axis else None
 
-        for _ in context.iter_descendants(axis=_axis, inner_focus=True):
-            yield from self[0].select(context)
+        items = set()
+        for _ in context.iter_descendants():
+            inner_context = copy(context)
+            for result in self[0].select(inner_context):
+                if not isinstance(result, (tuple, XPathNode)) and not hasattr(result, 'tag'):
+                    items.add(result)
+                elif result in items:
+                    pass
+                elif isinstance(result, TypedElement):
+                    if result.elem not in items:
+                        items.add(result)
+                elif isinstance(result, TypedAttribute):
+                    if result.attribute not in items:
+                        items.add(result)
+                else:
+                    items.add(result)
+                    if isinstance(context, XPathSchemaContext):
+                        self[0].add_xsd_type(result)
+
+        yield from context.iter_results(items)
 
 
 ###

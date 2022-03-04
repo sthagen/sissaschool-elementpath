@@ -26,6 +26,7 @@ import math
 import pathlib
 import platform
 import xml.etree.ElementTree as ElementTree
+from typing import cast
 
 try:
     import lxml.etree as lxml_etree
@@ -44,13 +45,19 @@ from elementpath.namespaces import XPATH_FUNCTIONS_NAMESPACE
 from elementpath.xpath_nodes import is_document_node, is_lxml_document_node, \
     is_etree_element, is_lxml_etree_element
 from elementpath.xpath3 import XPath30Parser, XPath31Parser
-from elementpath.xpath30.xpath30_formats import PICTURE_PATTERN, \
+from elementpath.xpath30.xpath30_helpers import PICTURE_PATTERN, \
     int_to_roman, int_to_alphabetic, int_to_words
 
 try:
+    from tests import xpath_test_class
     from tests import test_xpath2_parser
+    from tests import test_xpath2_functions
+    from tests import test_xpath2_constructors
 except ImportError:
+    import xpath_test_class
     import test_xpath2_parser
+    import test_xpath2_functions
+    import test_xpath2_constructors
 
 
 ANALYZE_STRING_1 = """<analyze-string-result xmlns="http://www.w3.org/2005/xpath-functions">
@@ -89,16 +96,27 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
                     os.environ[v] = self.current_env_vars[v]
 
     def test_braced_uri_literal(self):
+        expected_lexemes = ['Q{', 'http', ':', '//', 'xpath.test', '/', 'ns', '}', 'ABC']
+        self.check_tokenizer("Q{http://xpath.test/ns}ABC", expected_lexemes)
+        self.check_tokenizer("/Q{http://xpath.test/ns}ABC", ['/'] + expected_lexemes)
+
+        self.check_tokenizer("Q{###}ABC", ['Q{', '#', '#', '#', '}', 'ABC'])
+
+        token = self.parser.parse('/Q{http://xpath.test/ns}ABC')
+        self.assertEqual(token.symbol, '/')
+        self.assertEqual(token[0].symbol, 'Q{')
+
+        with self.assertRaises(TypeError) as ctx:
+            self.parser.parse('/Q{###}ABC')
+        self.assertIn('XQST0046', str(ctx.exception))
+
         token = self.parser.parse('Q{http://www.w3.org/2005/xpath-functions/math}pi()')
         self.assertEqual(token.evaluate(), math.pi)
 
+        # '{' is unusable for non-standard braced URI literals
+        # because is used for inline functions body
         with self.assertRaises(SyntaxError):
             self.parser.parse('{http://www.w3.org/2005/xpath-functions/math}pi()')
-
-        # self.parser.strict = False
-        # token = self.parser.parse('{http://www.w3.org/2005/xpath-functions/math}pi()')
-        # self.assertEqual(token.evaluate(), math.pi)
-        # self.parser.strict = True
 
     def test_concat_operator(self):
         token = self.parser.parse("10 || '/' || 6")
@@ -496,51 +514,70 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
         self.assertEqual(document.getroot().tag, 'alpha')
         self.assertEqual(document.getroot().text, 'abcd')
 
-        self.assertIsNone(self.parser.parse('fn:parse-xml(())').evaluate())
+        self.assertEqual(self.parser.parse('fn:parse-xml(())').evaluate(), [])
 
         with self.assertRaises(ValueError) as ctx:
-            self.parser.parse('fn:parse-xml("<alpha>abcd<alpha>")').evaluate()
+            self.parser.parse('fn:parse-xml("<alpha>abcd<alpha>")').evaluate(context)
 
         self.assertIn('FODC0006', str(ctx.exception))
         self.assertIn('not a well-formed XML document', str(ctx.exception))
 
     def test_parse_xml_fragment_function(self):
         document = self.parser.parse(
-            'fn:parse-xml-fragment("<alpha>abcd</alpha><beta>abcd</beta>")'
+            'fn:parse-xml-fragment("<root><alpha>abcd</alpha><beta>abcd</beta></root>")'
         ).evaluate()
         self.assertTrue(is_document_node(document))
         self.assertTrue(is_etree_element(document.getroot()))
+        self.assertEqual(document.getroot().tag, 'root')
         self.assertEqual(document.getroot()[0].tag, 'alpha')
         self.assertEqual(document.getroot()[0].text, 'abcd')
         self.assertEqual(document.getroot()[1].tag, 'beta')
         self.assertEqual(document.getroot()[1].text, 'abcd')
 
-        document = self.parser.parse(
+        # Fragments that are not valid formal documents
+        document_root = self.parser.parse(
+            'fn:parse-xml-fragment("<alpha>abcd</alpha><beta>abcd</beta>")'
+        ).evaluate()
+        self.assertFalse(is_document_node(document_root))
+        self.assertTrue(is_etree_element(document_root))
+        self.assertEqual(document_root.tag, 'document')
+        self.assertEqual(document_root[0].tag, 'alpha')
+        self.assertEqual(document_root[0].text, 'abcd')
+        self.assertEqual(document_root[1].tag, 'beta')
+        self.assertEqual(document_root[1].text, 'abcd')
+
+        document_root = self.parser.parse(
             'fn:parse-xml-fragment("He was <i>so</i> kind")'
         ).evaluate()
-        self.assertTrue(is_document_node(document))
-        self.assertTrue(is_etree_element(document.getroot()))
-        self.assertEqual(document.getroot().text, 'He was ')
-        self.assertEqual(document.getroot()[0].tag, 'i')
-        self.assertEqual(document.getroot()[0].text, 'so')
-        self.assertEqual(document.getroot()[0].tail, ' kind')
+        self.assertTrue(is_etree_element(document_root))
+        self.assertEqual(document_root.text, 'He was ')
+        self.assertEqual(document_root.tag, 'document')
+        self.assertEqual(document_root[0].tag, 'i')
+        self.assertEqual(document_root[0].text, 'so')
+        self.assertEqual(document_root[0].tail, ' kind')
 
-        document = self.parser.parse('fn:parse-xml-fragment("")').evaluate()
-        self.assertTrue(is_document_node(document))
-        self.assertTrue(is_etree_element(document.getroot()))
-        self.assertEqual(document.getroot().tag, 'document')
-        self.assertIsNone(document.getroot().text)
+        document_root = self.parser.parse('fn:parse-xml-fragment("")').evaluate()
+        self.assertTrue(is_etree_element(document_root))
+        self.assertEqual(document_root.tag, 'document')
+        self.assertIsNone(document_root.text)
 
-        document = self.parser.parse('fn:parse-xml-fragment(" ")').evaluate()
-        self.assertTrue(is_document_node(document))
-        self.assertTrue(is_etree_element(document.getroot()))
-        self.assertEqual(document.getroot().tag, 'document')
-        self.assertEqual(document.getroot().text, ' ')
+        document_root = self.parser.parse('fn:parse-xml-fragment(" ")').evaluate()
+        self.assertTrue(is_etree_element(document_root))
+        self.assertEqual(document_root.tag, 'document')
+        self.assertEqual(document_root.text, ' ')
+
+        with self.assertRaises(MissingContextError) as ctx:
+            self.parser.parse(
+                'fn:parse-xml(\'<xml version="1.0" encoding="utf8" standalone="yes"?></a>\')'
+            ).evaluate()
+
+        root = self.etree.XML('<root/>')
+        context = XPathContext(root=self.etree.ElementTree(root))
 
         with self.assertRaises(ValueError) as ctx:
             self.parser.parse(
                 'fn:parse-xml(\'<xml version="1.0" encoding="utf8" standalone="yes"?></a>\')'
-            ).evaluate()
+            ).evaluate(context)
 
         self.assertIn('FODC0006', str(ctx.exception))
         self.assertIn('not a well-formed XML document', str(ctx.exception))
@@ -583,10 +620,10 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
         root = self.etree.XML('<root/>')
         context = XPathContext(root=root)
         result = self.parser.parse('fn:generate-id()').evaluate(context)
-        self.assertEqual(result, 'ID-{}'.format(id(context.item)))
+        self.assertEqual(result, 'ID{}'.format(id(context.item)))
 
         result = self.parser.parse('fn:generate-id(.)').evaluate(context)
-        self.assertEqual(result, 'ID-{}'.format(id(context.item)))
+        self.assertEqual(result, 'ID{}'.format(id(context.item)))
 
         context.item = 1
         with self.assertRaises(TypeError) as ctx:
@@ -656,21 +693,22 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
 
         root = self.etree.XML('<root/>')
         context = XPathContext(root=root, variables={'a': 9.0, 'b': 3.0})
-        self.assertListEqual(token.evaluate(context), [2, 3, 5, 7, 11, 13])
+        self.assertListEqual(token(context), [2, 3, 5, 7, 11, 13])
 
         token = self.parser.parse(
-            "function($a as xs:double, $b as xs:double) as xs:double { $a * $b }")
+            "function($a as xs:double, $b as xs:double) as xs:double { $a * $b } (9.0, 3.0)"
+        )
         with self.assertRaises(MissingContextError):
             token.evaluate()
 
         root = self.etree.XML('<root/>')
-        context = XPathContext(root=root, variables={'a': 9.0, 'b': 3.0})
-        self.assertEqual(token.evaluate(context), 27.0)
+        context = XPathContext(root=root)
+        self.assertEqual(token(context), 27.0)
 
-        token = self.parser.parse("function($a) { $a }")
+        token = self.parser.parse("function($a) { $a } (10)")
         with self.assertRaises(MissingContextError):
             token.evaluate()
-        self.assertEqual(token.evaluate(context), 9.0)
+        self.assertEqual(token(context), 10)
 
     def test_dynamic_function_call(self):
         token = self.parser.parse("$f(2, 3)")
@@ -702,7 +740,8 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
             token.evaluate(context)
 
         context.variables['f'] = [1, context.variables['f']]
-        self.assertEqual(token.evaluate(context), 'Hi there')
+        with self.assertRaises(TypeError):
+            token.evaluate(context)
 
         context.variables['f'] = self.parser.symbol_table['true'](self.parser, nargs=0)
         token = self.parser.parse('$f()[2]')
@@ -754,6 +793,17 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
         root = self.etree.XML('<root/>')
         context = XPathContext(root=root, variables={'node': root})
         self.assertEqual(token.evaluate(context), 1)
+
+    def test_function_test(self):
+        func: XPathFunction
+        func = cast(XPathFunction, self.parser.parse("function($x as item()) as item() { $x }"))
+        self.assertTrue(func.match_function_test('function(*)'))
+
+        func = cast(XPathFunction, self.parser.parse("function($x as item()) as xs:integer { $x }"))
+        self.assertTrue(func.match_function_test('function(item()) as item()'))
+
+        func = cast(XPathFunction, self.parser.parse("function($x as item()) as item() { $x }"))
+        self.assertTrue(func.match_function_test('function(xs:string) as item()'))
 
     def test_let_expression(self):
         token = self.parser.parse('let $x := 4, $y := 3 return $x + $y')
@@ -865,7 +915,7 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
         self.assertListEqual(PICTURE_PATTERN.split(' [H٠]:[m٠]:[s٠٠]:[f٠٠٠]'),
                              [' ', ':', ':', ':', ''])
         self.assertListEqual(PICTURE_PATTERN.findall('[y'), [])
-        self.assertListEqual(PICTURE_PATTERN.findall('[[y]'), [])
+        self.assertListEqual(PICTURE_PATTERN.findall('[[y]'), ['[y]'])
 
     def test_int_to_roman(self):
         self.assertRaises(TypeError, int_to_roman, 3.0)
@@ -916,6 +966,27 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
 
 @unittest.skipIf(lxml_etree is None, "The lxml library is not installed")
 class LxmlXPath3ParserTest(XPath30ParserTest):
+    etree = lxml_etree
+
+
+class XPath30FunctionsTest(test_xpath2_functions.XPath2FunctionsTest):
+    def setUp(self):
+        self.parser = XPath30Parser(namespaces=self.namespaces)
+
+
+@unittest.skipIf(lxml_etree is None, "The lxml library is not installed")
+class LxmlXPath30FunctionsTest(XPath30FunctionsTest):
+    etree = lxml_etree
+
+
+class XPath30ConstructorsTest(test_xpath2_constructors.XPath2ConstructorsTest):
+    def setUp(self):
+        self.parser = XPath30Parser(namespaces=self.namespaces)
+        self.dummy_type = xpath_test_class.DummyXsdType()
+
+
+@unittest.skipIf(lxml_etree is None, "The lxml library is not installed")
+class LxmlXPath30ConstructorsTest(XPath30ConstructorsTest):
     etree = lxml_etree
 
 

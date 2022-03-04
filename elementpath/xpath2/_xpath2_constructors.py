@@ -18,7 +18,7 @@ from ..datatypes import xsd10_atomic_types, xsd11_atomic_types, GregorianDay, \
     GregorianYearMonth10, GregorianYearMonth, Duration, DayTimeDuration, \
     YearMonthDuration, Date10, Date, DateTime10, DateTime, DateTimeStamp, \
     Time, UntypedAtomic, QName, HexBinary, Base64Binary, BooleanProxy
-from .xpath2_functions import XPath2Parser
+from ._xpath2_functions import XPath2Parser
 
 
 register = XPath2Parser.register
@@ -80,7 +80,7 @@ def cast_integer_types(self, value):
         return xsd10_atomic_types[self.symbol](value)
     except ValueError:
         msg = 'could not convert {!r} to xs:{}'.format(value, self.symbol)
-        if isinstance(value, (str, bytes, UntypedAtomic, bool)):
+        if isinstance(value, (str, bytes, int, UntypedAtomic)):
             raise self.error('FORG0001', msg) from None
         raise self.error('FOCA0002', msg) from None
     except OverflowError as err:
@@ -286,6 +286,8 @@ def cast_datetime_stamp_type(self, value):
     try:
         if isinstance(value, UntypedAtomic):
             return DateTimeStamp.fromstring(value.value)
+        elif isinstance(value, Date):
+            return DateTimeStamp(value.year, value.month, value.day, tzinfo=value.tzinfo)
         return DateTimeStamp.fromstring(value)
     except ValueError as err:
         raise self.error('FORG0001', err) from None
@@ -299,6 +301,8 @@ def evaluate_datetime_stamp_type(self, context=None):
 
     if isinstance(arg, UntypedAtomic):
         return self.cast(arg.value)
+    elif isinstance(arg, Date):
+        return self.cast(arg)
     return self.cast(str(arg))
 
 
@@ -374,15 +378,16 @@ def nud_notation_type(self):
 
 
 ###
-# Multi role-tokens constructors (function or constructor)
+# Multirole tokens (function or constructor function)
 #
 
 # Case 1: In XPath 2.0 the 'boolean' keyword is used both for boolean() function and
-# for boolean() constructor.
+# for boolean() constructor function.
 unregister('boolean')
 
 
-@constructor('boolean', label=('function', 'constructor function'))
+@constructor('boolean', label=('function', 'constructor function'),
+             sequence_types=('item()*', 'xs:boolean'))
 def cast_boolean_type(self, value):
     try:
         return BooleanProxy(value)
@@ -427,7 +432,8 @@ def evaluate_boolean_type_and_function(self, context=None):
 unregister('string')
 
 
-@constructor('string', label=('function', 'constructor function'))
+@constructor('string', label=('function', 'constructor function'),
+             nargs=(0, 1), sequence_types=('item()?', 'xs:string'))
 def cast_string_type(self, value):
     return self.string_value(value)
 
@@ -468,11 +474,11 @@ def evaluate_string_type_and_function(self, context=None):
 # of the number of args.
 #
 @constructor('QName', bp=90, label=('function', 'constructor function'),
-             sequence_types=('xs:string?', 'xs:string', 'xs:QName'))
+             nargs=(1, 2), sequence_types=('xs:string?', 'xs:string', 'xs:QName'))
 def cast_qname_type(self, value):
     if isinstance(value, QName):
         return value
-    elif isinstance(value, UntypedAtomic):
+    elif isinstance(value, UntypedAtomic) and self.parser.version >= '3.0':
         return self.cast_to_qname(value.value)
     elif isinstance(value, str):
         return self.cast_to_qname(value)
@@ -481,7 +487,7 @@ def cast_qname_type(self, value):
 
 
 @constructor('dateTime', bp=90, label=('function', 'constructor function'),
-             sequence_types=('xs:date?', 'xs:time?', 'xs:dateTime?'))
+             nargs=(1, 2), sequence_types=('xs:date?', 'xs:time?', 'xs:dateTime?'))
 def cast_datetime_type(self, value):
     cls = DateTime if self.parser.xsd_version == '1.1' else DateTime10
     if isinstance(value, cls):
@@ -515,6 +521,7 @@ def nud_qname_and_datetime(self):
             raise self.error('XPST0017', '2nd argument missing')
         else:
             self.label = 'constructor function'
+            self.nargs = 1
         self.parser.advance(')')
     except SyntaxError:
         raise self.error('XPST0017') from None

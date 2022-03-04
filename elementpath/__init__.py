@@ -7,10 +7,10 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-__version__ = '2.4.0'
+__version__ = '2.5.0'
 __author__ = "Davide Brunato"
 __contact__ = "brunato@sissa.it"
-__copyright__ = "Copyright 2018-2021, SISSA"
+__copyright__ = "Copyright 2018-2022, SISSA"
 __license__ = "MIT"
 __status__ = "Production/Stable"
 
@@ -20,6 +20,7 @@ from .exceptions import ElementPathError, MissingContextError, \
     ElementPathTypeError, ElementPathLocaleError, ElementPathValueError, \
     ElementPathOverflowError, ElementPathZeroDivisionError
 
+from . import datatypes
 from .xpath_context import XPathContext, XPathSchemaContext
 from .xpath_nodes import XPathNode, AttributeNode, TextNode, \
     NamespaceNode, TypedElement, TypedAttribute

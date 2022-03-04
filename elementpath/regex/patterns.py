@@ -13,6 +13,7 @@ Parse and translate XML Schema regular expressions to Python regex syntax.
 import re
 from sys import maxunicode
 
+from ..helpers import OCCURRENCE_INDICATORS
 from .unicode_subsets import RegexError, UnicodeSubset, unicode_subset
 from .character_classes import I_SHORTCUT_REPLACE, C_SHORTCUT_REPLACE, CharacterClass
 
@@ -21,10 +22,10 @@ INVALID_HYPHEN_PATTERN = re.compile(r'[^\\]-[^\\]-[^\\]')
 DIGITS_PATTERN = re.compile(r'\d+')
 QUANTIFIER_PATTERN = re.compile(r'{\d+(,(\d+)?)?}')
 FORBIDDEN_ESCAPES_NOREF_PATTERN = re.compile(
-    r'(?<!\\)\\(U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|o{\d+}|\d+|A|Z|z|B|b|o)'
+    r'(?<!\\)\\(U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|o{\d+}|\d+|A|Z|z|B|b|o|0[0-9]{2})'
 )
 FORBIDDEN_ESCAPES_REF_PATTERN = re.compile(
-    r'(?<!\\)\\(U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|o{\d+}|A|Z|z|B|b|o)'
+    r'(?<!\\)\\(U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|o{\d+}|A|Z|z|B|b|o|0[0-9]{2})'
 )
 
 
@@ -152,6 +153,11 @@ def translate_pattern(pattern: str, flags: int = 0, xsd_version: str = '1.0',
                 msg = "invalid quantifier {!r} at position {}: {!r}"
                 raise RegexError(msg.format(ch, pos, pattern))
 
+            if regex and regex[-1] in ('^', r'(?<!\n\Z)^', '$', r'$(?!\n\Z)'):
+                # ^{n} or ${n} allowed but useless. Invalid im Python re
+                # so incapsulate '^'/'$' inside a non-capturing group.
+                regex[-1] = f'(?:{regex[-1]})'
+
             regex.append(match.group())
             pos += len(match.group())
             if not lazy_quantifiers and pos < pattern_len and pattern[pos] in ('?', '+', '*'):
@@ -160,8 +166,8 @@ def translate_pattern(pattern: str, flags: int = 0, xsd_version: str = '1.0',
             continue  # pragma: no cover
 
         elif ch == '(':
-            if pattern[pos:pos + 2] == '(?':
-                msg = "invalid '(?...)' extension notation ad position {}: {!r}"
+            if pattern[pos:pos + 2] == '(?' and pattern[pos:pos + 3] != '(?:':
+                msg = "invalid '(?...)' extension notation at position {}: {!r}"
                 raise RegexError(msg.format(pos, pattern))
 
             total_groups += 1
@@ -180,7 +186,7 @@ def translate_pattern(pattern: str, flags: int = 0, xsd_version: str = '1.0',
             nested_groups -= 1
             regex.append(ch)
 
-        elif ch in ('?', '+', '*'):
+        elif ch in OCCURRENCE_INDICATORS:
             if pos == 0:
                 msg = "unexpected quantifier {!r} at position {}: {!r}"
                 raise RegexError(msg.format(ch, pos, pattern))
@@ -189,6 +195,11 @@ def translate_pattern(pattern: str, flags: int = 0, xsd_version: str = '1.0',
             elif pos < pattern_len - 1 and pattern[pos + 1] in ('?', '+', '*', '{'):
                 msg = "unexpected meta character {!r} at position {}: {!r}"
                 raise RegexError(msg.format(pattern[pos + 1], pos + 1, pattern))
+
+            if regex and regex[-1] in ('^', r'(?<!\n\Z)^', '$', r'$(?!\n\Z)'):
+                # ^*/^+/^? or $*/$+/$? allowed but useless. Invalid im Python re
+                # so incapsulate '^'/'$' inside a non-capturing group.
+                regex[-1] = f'(?:{regex[-1]})'
 
             regex.append(ch)
 

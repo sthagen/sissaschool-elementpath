@@ -22,10 +22,12 @@ import re
 import json
 import math
 import os
+import pathlib
 import sys
 import traceback
 
 from collections import OrderedDict
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 import lxml.etree
 
@@ -33,17 +35,18 @@ import elementpath
 import xmlschema
 
 from elementpath import ElementPathError, XPath2Parser, XPathContext, XPathNode
+from elementpath.namespaces import get_expanded_name
 from elementpath.xpath_token import XPathFunction
 from elementpath.datatypes import AnyAtomicType
+from elementpath.xpath31 import XPath31Parser
 
+
+PY38_PLUS = sys.version_info > (3, 8)
 
 DEPENDENCY_TYPES = {'spec', 'feature', 'calendar', 'default-language',
                     'format-integer-sequence', 'language', 'limits',
                     'xml-version', 'xsd-version', 'unicode-version',
                     'unicode-normalization-form'}
-
-IGNORE_SPECS = {'XQ10', 'XQ10+', 'XP30', 'XP30+', 'XQ30', 'XQ30+',
-                'XP31', 'XP31+', 'XQ31', 'XQ31+', 'XT30+'}
 
 SKIP_TESTS = {
     'fn-subsequence__cbcl-subsequence-010',
@@ -53,11 +56,18 @@ SKIP_TESTS = {
     'fn-subsequence__cbcl-subsequence-014',
     'prod-NameTest__NodeTest004',
 
-    # Maybe tested with lxml
-    'fn-string__fn-string-30',  # parse of comments required
-
     # Unsupported collations
     'fn-compare__compare-010',
+    'fn-substring-after__fn-substring-after-24',
+    'fn-substring-before__fn-substring-before-24',
+    'fn-deep-equal__K-SeqDeepEqualFunc-57',
+    'fn-deep-equal__K-SeqDeepEqualFunc-56',
+
+    # Unsupported language
+    'fn-format-integer__format-integer-032',
+    'fn-format-integer__format-integer-032-fr',
+    'fn-format-integer__format-integer-052',
+    'fn-format-integer__format-integer-065',
 
     # Processing-instructions (tests on env "auction")
     'fn-local-name__fn-local-name-78',
@@ -69,6 +79,17 @@ SKIP_TESTS = {
     'fn-codepoints-to-string__K-CodepointToStringFunc-11b',
     'fn-codepoints-to-string__K-CodepointToStringFunc-12b',
 
+    # Require unicode version "7.0"
+    'fn-lower-case__fn-lower-case-19',
+    'fn-upper-case__fn-upper-case-19',
+    'fn-matches.re__re00506',
+    'fn-matches.re__re00984',
+
+    # Very large number fault (interpreter crashes or float rounding)
+    'op-to__RangeExpr-409d',
+    'fn-format-number__numberformat60a',
+    'fn-format-number__cbcl-fn-format-number-035',
+
     # For XQuery??
     'fn-deep-equal__K2-SeqDeepEqualFunc-43',  # includes a '!' symbol
 
@@ -78,16 +99,100 @@ SKIP_TESTS = {
     'fn-unparsed-text__fn-unparsed-text-038',  # Typo in filename
     'fn-unparsed-text-lines__fn-unparsed-text-lines-038',  # Typo in filename
     'fn-serialize__serialize-xml-015b',  # Do not raise, attribute is good
+    'fn-parse-xml-fragment__parse-xml-fragment-022-st',  # conflict with parse-xml-fragment-022
+    'fn-for-each-pair__fn-for-each-pair-017',  # Requires PI and comments parsing
+    'fn-function-lookup__fn-function-lookup-522',  # xs:dateTimeStamp for XSD 1.1 only
 
     # Unicode FULLY-NORMALIZATION not supported in Python's unicodedata
     'fn-normalize-unicode__cbcl-fn-normalize-unicode-001',
     'fn-normalize-unicode__cbcl-fn-normalize-unicode-006',
 
+    # 'เจมส์' does not match xs:NCName (maybe due to Python re module limitation)
+    'prod-CastExpr__K2-SeqExprCast-488',
+    'prod-CastExpr__K2-SeqExprCast-504',
+
     # IMHO incorrect tests
     'fn-resolve-uri__fn-resolve-uri-9',  # URI scheme names are lowercase
+    'fn-format-number__numberformat82',  # result may be '12.340,00' instead of '0.012,34'
+    'fn-format-number__numberformat83',  # (idem)
+}
+
+# Tests that can be run only with lxml.etree
+LXML_ONLY = {
+    # parse of comments or PIs required
+    'fn-string__fn-string-30',
+    'prod-AxisStep__Axes003-4',
+    'prod-AxisStep__Axes006-4',
+    'prod-AxisStep__Axes033-4',
+    'prod-AxisStep__Axes037-2',
+    'prod-AxisStep__Axes046-2',
+    'prod-AxisStep__Axes049-2',
+    'prod-AxisStep__Axes058-2',
+    'prod-AxisStep__Axes058-3',
+    'prod-AxisStep__Axes061-1',
+    'prod-AxisStep__Axes061-2',
+    'prod-AxisStep__Axes064-2',
+    'prod-AxisStep__Axes064-3',
+    'prod-AxisStep__Axes067-2',
+    'prod-AxisStep__Axes067-3',
+    'prod-AxisStep__Axes073-1',
+    'prod-AxisStep__Axes073-2',
+    'prod-AxisStep__Axes076-4',
+    'prod-AxisStep__Axes079-4',
+    'fn-path__path007',
+    'fn-path__path009',
+    'fn-generate-id__generate-id-005',
+    'fn-parse-xml-fragment__parse-xml-fragment-010',
+
+    # in-scope namespaces required
+    'prod-AxisStep__Axes118',
+    'prod-AxisStep__Axes120',
+    'prod-AxisStep__Axes126',
+    'fn-resolve-QName__fn-resolve-qname-26',
+    'fn-in-scope-prefixes__fn-in-scope-prefixes-21',
+    'fn-in-scope-prefixes__fn-in-scope-prefixes-22',
+    'fn-in-scope-prefixes__fn-in-scope-prefixes-24',
+    'fn-in-scope-prefixes__fn-in-scope-prefixes-25',
+    'fn-in-scope-prefixes__fn-in-scope-prefixes-26',
+    'fn-innermost__fn-innermost-017',
+    'fn-innermost__fn-innermost-018',
+    'fn-innermost__fn-innermost-019',
+    'fn-innermost__fn-innermost-020',
+    'fn-innermost__fn-innermost-021',
+    'fn-outermost__fn-outermost-017',
+    'fn-outermost__fn-outermost-018',
+    'fn-outermost__fn-outermost-019',
+    'fn-outermost__fn-outermost-021',
+    'fn-local-name__fn-local-name-77',
+    'fn-local-name__fn-local-name-79',
+    'fn-name__fn-name-27',
+    'fn-name__fn-name-29',
+    'fn-string__fn-string-27',
+    'fn-format-number__numberformat87',
+    'fn-format-number__numberformat88',
+    'fn-path__path010',
+    'fn-path__path011',
+    'fn-path__path012',
+    'fn-path__path013',
+    'fn-function-lookup__fn-function-lookup-262',
+    'fn-generate-id__generate-id-007',
+    'fn-serialize__serialize-xml-012',
+    'prod-EQName__eqname-018',
+    'prod-EQName__eqname-023',
+    'prod-NamedFunctionRef__function-literal-262',
+
+    # XML declaration
+    'fn-serialize__serialize-xml-029b',
+    'fn-serialize__serialize-xml-030b',
+
+    # require external ENTITY parsing
+    'fn-parse-xml__parse-xml-010',
 }
 
 xpath_parser = XPath2Parser
+
+ignore_specs = {'XQ10', 'XQ10+', 'XP30', 'XP30+', 'XQ30', 'XQ30+',
+                'XP31', 'XP31+', 'XQ31', 'XQ31+', 'XT30+'}
 
 QT3_NAMESPACE = "http://www.w3.org/2010/09/qt-fots-catalog"
 
@@ -105,6 +210,38 @@ def working_directory(dirpath):
         yield
     finally:
         os.chdir(orig_wd)
+
+
+def etree_is_equal(root1, root2, strict=True):
+    nodes1 = root1.iter()
+    nodes2 = root2.iter()
+
+    for e1 in nodes1:
+        e2 = next(nodes2, None)
+        if e2 is None:
+            return False
+
+        if e1.tail != e2.tail:
+            if strict or e1.tail is None or e2.tail is None:
+                return False
+            if e1.tail.strip() != e2.tail.strip():
+                return False
+
+        if callable(e1.tag) ^ callable(e2.tag):
+            return False
+        elif not callable(e1.tag):
+            if e1.tag != e1.tag:
+                return False
+            if e1.attrib != e1.attrib:
+                return False
+
+        if e1.text != e2.text:
+            if strict or e1.text is None or e2.text is None:
+                return False
+            if e1.text.strip() != e2.text.strip():
+                return False
+
+    return next(nodes2, None) is None
 
 
 class ExecutionError(Exception):
@@ -146,32 +283,52 @@ class Source(object):
         assert elem.tag == '{%s}source' % QT3_NAMESPACE
         self.file = elem.attrib['file']
         self.role = elem.attrib.get('role', '')
-        self.uri = elem.attrib.get('uri')
+        self.uri = elem.attrib.get('uri', self.file)
+        if not urlsplit(self.uri).scheme:
+            self.uri = pathlib.Path(self.uri).absolute().as_uri()
+
+        self.key = self.role or self.file
+
         try:
             self.description = elem.find('description', namespaces).text
         except AttributeError:
             self.description = ''
 
-        try:
-            if use_lxml:
-                self.xml = lxml.etree.parse(self.file)
+        if use_lxml:
+            iterparse = lxml.etree.iterparse
+            parser = lxml.etree.XMLParser(collect_ids=False)
+            try:
+                self.xml = lxml.etree.parse(self.file, parser=parser)
+            except lxml.etree.XMLSyntaxError:
+                self.xml = None
+        else:
+            iterparse = ElementTree.iterparse
+            if PY38_PLUS:
+                tree_builder = ElementTree.TreeBuilder(insert_comments=True, insert_pis=True)
+                parser = ElementTree.XMLParser(target=tree_builder)
             else:
-                self.xml = ElementTree.parse(self.file)
-                self.namespaces = {}
-                dup_index = 1
+                parser = None
 
-                for _, (prefix, uri) in ElementTree.iterparse(self.file, events=('start-ns',)):
-                    if prefix not in self.namespaces:
-                        self.namespaces[prefix] = uri
-                    elif prefix:
-                        self.namespaces[f'{prefix}{dup_index}'] = uri
-                        dup_index += 1
-                    else:
-                        self.namespaces[f'default{dup_index}'] = uri
-                        dup_index += 1
+            try:
+                self.xml = ElementTree.parse(self.file, parser=parser)
+            except ElementTree.ParseError:
+                self.xml = None
 
+        try:
+            self.namespaces = {}
+            dup_index = 1
+
+            for _, (prefix, uri) in iterparse(self.file, events=('start-ns',)):
+                if prefix not in self.namespaces:
+                    self.namespaces[prefix] = uri
+                elif prefix:
+                    self.namespaces[f'{prefix}{dup_index}'] = uri
+                    dup_index += 1
+                else:
+                    self.namespaces[f'default{dup_index}'] = uri
+                    dup_index += 1
         except (ElementTree.ParseError, lxml.etree.XMLSyntaxError):
-            self.xml = None
+            pass
 
     def __repr__(self):
         return '%s(file=%r)' % (self.__class__.__name__, self.file)
@@ -200,6 +357,7 @@ class Environment(object):
     collection = None
     schema = None
     static_base_uri = None
+    decimal_formats = None
 
     def __init__(self, elem, use_lxml=False):
         assert elem.tag == '{%s}environment' % QT3_NAMESPACE
@@ -208,6 +366,20 @@ class Environment(object):
             namespace.attrib['prefix']: namespace.attrib['uri']
             for namespace in elem.iterfind('namespace', namespaces)
         }
+
+        child = elem.find('decimal-format', namespaces)
+        if child is not None:
+            name = child.get('name')
+            if name is not None and ':' in name:
+                if use_lxml:
+                    name = get_expanded_name(name, child.nsmap)
+                else:
+                    try:
+                        name = get_expanded_name(name, self.namespaces)
+                    except KeyError:
+                        pass
+
+            self.decimal_formats = {name: child.attrib}
 
         child = elem.find('collection', namespaces)
         if child is not None:
@@ -226,7 +398,7 @@ class Environment(object):
         self.sources = {}
         for child in elem.iterfind('source', namespaces):
             source = Source(child, use_lxml)
-            self.sources[source.role] = source
+            self.sources[source.key] = source
 
     def __repr__(self):
         return '%s(name=%r)' % (self.__class__.__name__, self.name)
@@ -267,13 +439,15 @@ class TestSet(object):
         self.specs = []
         self.features = []
         self.xsd_version = None
+        self.use_lxml = use_lxml
+        self.etree = lxml.etree if use_lxml else ElementTree
 
         full_path = os.path.abspath(self.file)
-        directory = os.path.dirname(full_path)
         filename = os.path.basename(full_path)
+        self.workdir = os.path.dirname(full_path)
 
-        with working_directory(directory):
-            xml_root = ElementTree.parse(filename).getroot()
+        with working_directory(self.workdir):
+            xml_root = self.etree.parse(filename).getroot()
 
             self.description = xml_root.find('description', namespaces).text
 
@@ -324,6 +498,8 @@ class TestCase(object):
         assert elem.tag == '{%s}test-case' % QT3_NAMESPACE
         self.test_set = test_set
         self.xsd_version = test_set.xsd_version
+        self.use_lxml = use_lxml
+        self.etree = lxml.etree if use_lxml else ElementTree
 
         self.name = test_set.name + "__" + elem.attrib['name']
         self.description = elem.find('description', namespaces).text
@@ -438,17 +614,29 @@ class TestCase(object):
                 schema = xmlschema.XMLSchema(environment.schema.filepath)
                 schema_proxy = schema.xpath_proxy
 
-        if not static_base_uri:
-            pass
+        if static_base_uri is None:
+            if self.name == "fn-parse-xml__parse-xml-007":
+                # workaround: static-base-uri() must return AnyURI('') for this case
+                static_base_uri = ''
+            else:
+                base_uri = os.path.dirname(os.path.abspath(self.test_set_file))
+                if os.path.isdir(base_uri):
+                    static_base_uri = f'{pathlib.Path(base_uri).as_uri()}/'
+
         elif static_base_uri.startswith(INVALID_BASE_URL):
             static_base_uri = static_base_uri.replace(INVALID_BASE_URL, effective_base_url)
 
-        parser = xpath_parser(
+        kwargs = dict(
             namespaces=test_namespaces,
             xsd_version=self.xsd_version,
             schema=schema_proxy,
             base_uri=static_base_uri,
+            compatibility_mode='xpath-1.0-compatibility' in self.features,
         )
+        if environment is not None and xpath_parser.version >= '3.0':
+            kwargs['decimal_formats'] = environment.decimal_formats
+
+        parser = xpath_parser(**kwargs)
 
         if self.test is not None:
             xpath_expression = self.test.replace(INVALID_BASE_URL, effective_base_url)
@@ -466,7 +654,8 @@ class TestCase(object):
         if not with_context:
             context = None
         elif environment is None:
-            context = XPathContext(root=ElementTree.XML("<empty/>"), timezone='Z')
+            context = XPathContext(root=self.etree.XML("<empty/>"), timezone='Z',
+                                   default_calendar=self.calendar)
         else:
             kwargs = {'timezone': 'Z'}
             variables = {}
@@ -475,7 +664,7 @@ class TestCase(object):
             if '.' in environment.sources:
                 root = environment.sources['.'].xml
             else:
-                root = ElementTree.XML("<empty/>")
+                root = self.etree.XML("<empty/>")
 
             if any(k.startswith('$') for k in environment.sources):
                 variables.update(
@@ -488,23 +677,26 @@ class TestCase(object):
                 variables[name] = value
 
             for source in environment.sources.values():
-                documents[source.file] = source.xml
-                if source.uri is not None:
-                    documents[source.uri] = source.xml
+                documents[source.uri] = source.xml
 
             if environment.collection is not None:
                 uri = environment.collection.uri
                 collection = [source.xml for source in environment.collection.sources]
-                if uri:
+                if uri is not None:
                     kwargs['collections'] = {uri: collection}
 
-                if 'non_empty_sequence_collection' in self.features or not uri:
+                if collection:
                     kwargs['default_collection'] = collection
+
+                if 'non_empty_sequence_collection' in self.features:
+                    kwargs['default_resource_collection'] = uri
 
             if variables:
                 kwargs['variables'] = variables
             if documents:
                 kwargs['documents'] = documents
+            if self.calendar:
+                kwargs['default_calendar'] = self.calendar
 
             context = XPathContext(root=root, **kwargs)
 
@@ -552,12 +744,14 @@ class Result(object):
     """
     # Validation helper tokens
     parser = xpath_parser()
-    string_token = parser.parse('fn:string($result)')
-    string_join_token = parser.parse('fn:string-join($result, " ")')
+    string_token = XPath31Parser().parse('fn:string($result)')
+    string_join_token = XPath31Parser().parse('fn:string-join($result, " ")')
 
     def __init__(self, elem, test_case, use_lxml=False):
         self.test_case = test_case
         self.use_lxml = use_lxml
+        self.etree = lxml.etree if use_lxml else ElementTree
+
         self.type = elem.tag.split('}')[1]
         self.value = elem.text
         self.attrib = {k: v for k, v in elem.attrib.items()}
@@ -641,6 +835,9 @@ class Result(object):
         result = not self.children[0].validate()
         if not result and verbose > 1:
             self.children[0].validate(verbose)
+
+        if not result:
+            self.report_failure(verbose, expected=False, result=True)
         return result
 
     def assert_eq_validator(self, verbose=1):
@@ -655,13 +852,17 @@ class Result(object):
 
         parser = xpath_parser(xsd_version=self.test_case.xsd_version)
         root_node = parser.parse(self.value)
-        context = XPathContext(root=ElementTree.XML("<empty/>"))
+        context = XPathContext(root=self.etree.XML("<empty/>"))
         expected_result = root_node.evaluate(context)
-        if expected_result == result:
-            return True
-        elif isinstance(expected_result, decimal.Decimal) and isinstance(result, float):
-            if float(expected_result) == result:
+
+        try:
+            if expected_result == result:
                 return True
+            elif isinstance(expected_result, decimal.Decimal) and isinstance(result, float):
+                if float(expected_result) == result:
+                    return True
+        except TypeError:
+            pass
 
         self.report_failure(verbose, expected=expected_result, result=result)
         return False
@@ -678,9 +879,6 @@ class Result(object):
 
         if self.value == 'function(*)':
             type_check = isinstance(result, XPathFunction)
-        elif self.value.startswith('element(') and self.value[8] != ')':
-            tag = self.value[8:self.value.index(')')]
-            type_check = hasattr(result, 'tag') and result.tag == tag
         elif not self.parser.is_sequence_type(self.value):
             msg = " test-case {}: {!r} is not a valid sequence type"
             print(msg.format(self.test_case.name, self.value))
@@ -701,14 +899,14 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        context = XPathContext(ElementTree.XML("<empty/>"), variables={'result': result})
+        context = XPathContext(self.etree.XML("<empty/>"), variables={'result': result})
         if isinstance(result, list):
             value = self.string_join_token.evaluate(context)
         else:
             value = self.string_token.evaluate(context)
 
         if self.attrib.get('normalize-space'):
-            expected = ' '.join(x.strip() for x in self.value.split('\n')).strip()
+            expected = re.sub(r'\s+', ' ', self.value).strip()
             value = ' '.join(x.strip() for x in value.split('\n')).strip()
         else:
             expected = self.value
@@ -718,6 +916,12 @@ class Result(object):
                 return True
         elif value == expected:
             return True
+        elif isinstance(expected, str):
+            # workaround for typos in some expected values
+            if expected.strip() == value:
+                return True
+            elif expected.replace('v ;', 'v;') == value:
+                return True
 
         if value and ' ' not in value:
             try:
@@ -734,18 +938,26 @@ class Result(object):
 
     def error_validator(self, verbose=1):
         code = self.attrib.get('code', '*').strip()
+        err_traceback = ''
+
         try:
             self.test_case.run_xpath_test(verbose, with_context=code != 'XPDY0002')
         except ElementPathError as err:
             if code == '*' or code in str(err):
                 return True
+
+            if verbose > 3:
+                err_traceback = ''.join(traceback.format_exception(None, err, err.__traceback__))
             reason = "Unexpected error {!r}: {}".format(type(err), str(err))
+
         except (ParseError, EvaluateError) as err:
             reason = "Not an elementpath error {!r}: {}".format(type(err), str(err))
         else:
             reason = "Error not raised"
 
         self.report_failure(verbose, reason=reason, expected_code=code)
+        if err_traceback:
+            print(err_traceback)
         return False
 
     def assert_true_validator(self, verbose=1):
@@ -814,9 +1026,9 @@ class Result(object):
             return False
 
         variables = {'result': result}
-        parser = xpath_parser(xsd_version=self.test_case.xsd_version)
+        parser = XPath31Parser(xsd_version=self.test_case.xsd_version)
         root_node = parser.parse(self.value)
-        context = XPathContext(root=ElementTree.XML("<empty/>"), variables=variables)
+        context = XPathContext(root=self.etree.XML("<empty/>"), variables=variables)
         if root_node.boolean_value(root_node.evaluate(context)) is True:
             return True
 
@@ -836,9 +1048,9 @@ class Result(object):
         expression = "fn:deep-equal($result, (%s))" % self.value
         variables = {'result': result}
 
-        parser = xpath_parser(xsd_version=self.test_case.xsd_version)
+        parser = XPath31Parser(xsd_version=self.test_case.xsd_version)
         root_node = parser.parse(expression)
-        context = XPathContext(root=ElementTree.XML("<empty/>"), variables=variables)
+        context = XPathContext(root=self.etree.XML("<empty/>"), variables=variables)
         if root_node.evaluate(context) is True:
             return True
 
@@ -853,14 +1065,58 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
         else:
-            if result is None or result == []:
+            if result is None or result == '' or result == [] or result == ['']:
                 return True
 
             self.report_failure(verbose, result=result)
             return False
 
     def assert_permutation_validator(self, verbose=1):
-        """ TODO """
+        try:
+            result = self.test_case.run_xpath_test(verbose)
+        except (ElementPathError, ParseError, EvaluateError) as err:
+            self.report_failure(verbose, error=err)
+            return False
+
+        if not isinstance(result, list):
+            result = [result]
+
+        expected = self.parser.parse(self.value).evaluate()
+        if not isinstance(expected, list):
+            expected = [expected]
+
+        if set(expected) == set(result):
+            return True
+
+        if len(expected) == len(result):
+            _expected = set(expected)
+
+            for value in result:
+                if value in _expected:
+                    _expected.remove(value)
+                    continue
+                elif not isinstance(value, (float, decimal.Decimal)):
+                    self.report_failure(verbose, result=result, expected=expected)
+                    return False
+
+                dv = decimal.Decimal(value)
+                for ev in _expected:
+                    if not isinstance(ev, (float, decimal.Decimal)):
+                        continue
+                    elif math.isnan(ev) and math.isnan(dv):
+                        _expected.remove(ev)
+                        break
+                    elif math.isclose(dv, decimal.Decimal(ev), rel_tol=1E-7, abs_tol=0.0):
+                        _expected.remove(ev)
+                        break
+                else:
+                    self.report_failure(verbose, result=result, expected=expected)
+                    return False
+
+            return True
+
+        self.report_failure(verbose, result=result, expected=expected)
+        return False
 
     def assert_serialization_error_validator(self, verbose=1):
         # TODO: this currently succeeds on any error
@@ -873,8 +1129,14 @@ class Result(object):
 
     def assert_xml_validator(self, verbose=1):
         try:
-            result = self.test_case.run_xpath_test(verbose)
-        except (ElementPathError, ParseError, EvaluateError):
+            if self.test_case.test_set.name == 'fn-parse-xml':
+                with working_directory(self.test_case.test_set.workdir):
+                    result = self.test_case.run_xpath_test(verbose)
+            else:
+                result = self.test_case.run_xpath_test(verbose)
+
+        except (ElementPathError, ParseError, EvaluateError) as err:
+            self.report_failure(verbose, error=err)
             return False
 
         if result is None:
@@ -910,11 +1172,15 @@ class Result(object):
             parts = []
             for item in result:
                 if isinstance(item, elementpath.TypedElement):
+                    tail, item.elem.tail = item.elem.tail, None
                     parts.append(tostring(item.elem).decode('utf-8').strip())
+                    item.elem.tail = tail
                 elif isinstance(item, XPathNode):
                     parts.append(str(item.value))
                 elif hasattr(item, 'tag'):
+                    tail, item.tail = item.tail, None
                     parts.append(tostring(item).decode('utf-8').strip())
+                    item.tail = tail
                 elif hasattr(item, 'getroot'):
                     parts.append(tostring(item.getroot()).decode('utf-8').strip())
                 else:
@@ -941,14 +1207,16 @@ class Result(object):
         if xml_str == expected or xml_str.replace(' />', '/>') == expected:
             return True
 
-        # 2nd tentative (expected result from a serialization)
+        # 2nd tentative (expected result from a serialization or comparing trees)
         try:
             if xml_str == tostring(fromstring(expected)).decode('utf-8').strip():
                 return True
+            if etree_is_equal(fromstring(xml_str), fromstring(expected)):
+                return True
         except (ElementTree.ParseError, lxml.etree.ParseError):
-            # expected result is a concatenation of XML elements,
-            # so try removing xmlns registrations.
+            # invalid XML data (maybe empty or concatenation of XML elements)
 
+            # Last try removing xmlns registrations
             xmlns_pattern = re.compile(r'\sxmlns[^"]+"[^"]+"')
             expected_xmlns = xmlns_pattern.findall(expected)
 
@@ -1000,6 +1268,7 @@ def main():
 
     catalog_file = os.path.abspath(args.catalog)
     pattern = re.compile(args.pattern, flags=re.IGNORECASE if args.ignore_case else 0)
+    etree = lxml.etree if args.use_lxml else ElementTree
 
     if not os.path.isfile(catalog_file):
         print("Error: catalog file %s does not exist" % args.catalog)
@@ -1010,11 +1279,12 @@ def main():
 
         global xpath_parser
         xpath_parser = XPath30Parser
-        IGNORE_SPECS.remove('XP30')
-        IGNORE_SPECS.remove('XP30+')
+        ignore_specs.remove('XP30')
+        ignore_specs.remove('XP30+')
+        ignore_specs.add('XP20')
 
     with working_directory(dirpath=os.path.dirname(catalog_file)):
-        catalog_xml = ElementTree.parse(catalog_file)
+        catalog_xml = etree.parse(catalog_file)
 
         global effective_base_url
         effective_base_url = 'file://{}/fn/unparsed-text/'.format(os.getcwd())
@@ -1038,9 +1308,9 @@ def main():
         count_other_failures = 0
 
         for test_set in test_sets.values():
-            # ignore test cases for XQuery, and 3.0
+            # ignore by specs of test_set
             ignore_all_in_test_set = test_set.specs and all(
-                dep in IGNORE_SPECS for dep in test_set.specs
+                dep in ignore_specs for dep in test_set.specs
             )
 
             for test_case in test_set.test_cases:
@@ -1055,8 +1325,8 @@ def main():
                     count_skip += 1
                     continue
 
-                # ignore test cases for XQuery, and 3.0
-                if test_case.specs and all(dep in IGNORE_SPECS for dep in test_case.specs):
+                # ignore by specs of test_case
+                if test_case.specs and all(dep in ignore_specs for dep in test_case.specs):
                     count_skip += 1
                     continue
 
@@ -1071,8 +1341,15 @@ def main():
                     count_skip += 1
                     continue
 
+                # ignore cases where a directory is used as collection uri (not supported
+                # feature, only the case fn-collection__collection-010)
+                if 'directory-as-collection-uri' in test_case.features:
+                    count_skip += 1
+                    continue
+
                 # ignore tests that rely on XQuery 1.0/XPath 2.0 static-typing enforcement
-                if 'staticTyping' in test_case.test_set.features:
+                if 'staticTyping' in test_case.test_set.features \
+                        or 'staticTyping' in test_case.features:
                     count_skip += 1
                     continue
 
@@ -1083,6 +1360,10 @@ def main():
 
                 # Other test cases to skip for technical limitations
                 if test_case.name in SKIP_TESTS:
+                    count_skip += 1
+                    continue
+
+                if not args.use_lxml and test_case.name in LXML_ONLY:
                     count_skip += 1
                     continue
 

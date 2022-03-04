@@ -12,6 +12,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .xpath1_parser import XPath1Parser
 else:
-    from .xpath1_axes import XPath1Parser
+    from ._xpath1_axes import XPath1Parser
 
 __all__ = ['XPath1Parser']

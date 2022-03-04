@@ -9,27 +9,26 @@
 #
 import datetime
 import importlib
-from copy import copy
-from functools import lru_cache
 from itertools import chain
 from types import ModuleType
-from typing import TYPE_CHECKING, cast, Dict, Any, List, Iterable, Iterator, \
-    Optional, Sequence, Union, Callable, MutableMapping
+from typing import TYPE_CHECKING, cast, Dict, Any, List, Iterator, \
+    Optional, Sequence, Union, Callable, MutableMapping, Set, Tuple
 
-from .exceptions import ElementPathTypeError
+from .exceptions import ElementPathTypeError, ElementPathValueError
+from .namespaces import XML_NAMESPACE
 from .datatypes import AnyAtomicType, Timezone
-from .protocols import XsdElementProtocol, XMLSchemaProtocol
-from .xpath_nodes import TypedElement, AttributeNode, TextNode, TypedAttribute, \
-    etree_iter_nodes, is_etree_element, is_element_node, is_document_node, \
-    is_schema_node, is_lxml_etree_element, is_lxml_document_node, XPathNode, \
-    ElementNode, DocumentNode
+from .protocols import ElementProtocol, XsdElementProtocol, XMLSchemaProtocol
+from .xpath_nodes import NamespaceNode, AttributeNode, TextNode, TypedElement, \
+    TypedAttribute, etree_iter_nodes, is_etree_element, is_element_node, \
+    is_document_node, is_lxml_etree_element, is_lxml_document_node, \
+    XPathNode, ElementNode, DocumentNode, XPathNodeType, etree_iter_root
 
 if TYPE_CHECKING:
     from .xpath_token import XPathToken, XPathAxis
 
+
 ContextRootType = Union[ElementNode, DocumentNode]
-ContextItemType = Union[ElementNode, DocumentNode, XPathNode, AnyAtomicType]
-IterableNodeType = Union[ElementNode, DocumentNode, AttributeNode, TextNode]
+ContextItemType = Union[XPathNodeType, AnyAtomicType]
 
 
 class XPathContext:
@@ -61,8 +60,10 @@ class XPathContext:
     strings onto sequences of nodes. Used by the XPath 2.0+ function fn:collection.
     :param default_collection: this is the sequence of nodes used when fn:collection \
     is called with no arguments.
+    :param text_resources: available text resources. This is a mapping of absolute URI strings \
+    onto text resources. Used by XPath 3.0+ function fn:unparsed-text/fn:unparsed-text-lines.
     :param resource_collections: available URI collections. This is a mapping of absolute \
-    URI strings to sequences of URIs. Used by the XPath 3.0+ function fn:uri-collection.
+    URI strings to sequence of URIs. Used by the XPath 3.0+ function fn:uri-collection.
     :param default_resource_collection: this is the sequence of URIs used when \
     fn:uri-collection is called with no arguments.
     :param allow_environment: defines if the access to system environment is allowed, \
@@ -85,9 +86,10 @@ class XPathContext:
                  variables: Optional[Dict[str, Any]] = None,
                  current_dt: Optional[datetime.datetime] = None,
                  timezone: Optional[Union[str, Timezone]] = None,
-                 documents: Optional[DocumentNode] = None,
-                 collections: Optional[ElementNode] = None,
+                 documents: Optional[Dict[str, DocumentNode]] = None,
+                 collections: Optional[Dict[str, ElementNode]] = None,
                  default_collection: Optional[str] = None,
+                 text_resources: Optional[Dict[str, str]] = None,
                  resource_collections: Optional[Dict[str, List[str]]] = None,
                  default_resource_collection: Optional[str] = None,
                  allow_environment: bool = False,
@@ -124,6 +126,7 @@ class XPathContext:
         self.documents = documents
         self.collections = collections
         self.default_collection = default_collection
+        self.text_resources = text_resources if text_resources is not None else {}
         self.resource_collections = resource_collections
         self.default_resource_collection = default_resource_collection
         self.allow_environment = allow_environment
@@ -158,6 +161,20 @@ class XPathContext:
             if is_document_node(self.root):
                 self._parent_map[cast(DocumentNode, self.root).getroot()] = self.root
 
+            # Add parent mapping for trees bound to dynamic context variables
+            for v in self.variables.values():
+                if is_document_node(v):
+                    doc = cast(DocumentNode, v)
+                    self._parent_map.update((c, e) for e in doc.iter() for c in e)
+                    self._parent_map[doc.getroot()] = doc
+                elif is_element_node(v):
+                    if isinstance(v, TypedElement):
+                        root = v.elem
+                    else:
+                        root = cast(ElementNode, v)
+
+                    self._parent_map.update((c, e) for e in root.iter() for c in e)
+
         return self._parent_map
 
     @property
@@ -170,23 +187,36 @@ class XPathContext:
                 self._etree = importlib.import_module('xml.etree.ElementTree')
         return self._etree
 
-    @lru_cache(maxsize=1024)
+    def get_root(self, node: Any) -> Union[None, ElementNode, DocumentNode]:
+        if any(node == x for x in self.iter()):
+            return self.root
+
+        if self.documents is not None:
+            try:
+                for uri, doc in self.documents.items():
+                    doc_context = XPathContext(root=doc)
+                    if any(node == x for x in doc_context.iter()):
+                        return doc
+            except AttributeError:
+                pass
+
+        return None
+
     def get_parent(self, elem: Union[ElementNode, TypedElement]) \
-            -> Optional[Union[ElementNode, DocumentNode]]:
-        """
-        Returns the parent element or `None` for root element and for elements
-        that are not included in the tree. Uses a LRU cache to minimize parent
-        map rebuilding for trees processed with an incremental parser.
-        """
-        if isinstance(elem, TypedElement):
-            elem = elem.elem
-        if elem is self.root:
-            return None
+            -> Union[None, ElementNode, DocumentNode]:
+        """Returns the parent of the element or `None` if it has no parent."""
+        _elem = elem.elem if isinstance(elem, TypedElement) else elem
 
         try:
-            return self.parent_map[elem]
+            return self.parent_map[_elem]
         except KeyError:
-            return None
+            try:
+                # fallback for lxml elements
+                parent = _elem.getparent()  # type: ignore[attr-defined]
+            except AttributeError:
+                return None
+            else:
+                return cast(Optional[ElementNode], parent)
 
     def get_path(self, item: Any) -> str:
         """Cached path resolver for elements and attributes. Returns absolute paths."""
@@ -217,47 +247,139 @@ class XPathContext:
     def is_principal_node_kind(self) -> bool:
         if self.axis == 'attribute':
             return isinstance(self.item, (AttributeNode, TypedAttribute))
+        elif self.axis == 'namespace':
+            return isinstance(self.item, NamespaceNode)
         else:
             return is_element_node(self.item)
 
-    def iter(self) -> Iterator[IterableNodeType]:
-        """Iterates context nodes, including text and attribute nodes."""
-        root = self.root
-        if is_document_node(root):
-            yield root
-            root = cast(DocumentNode, root).getroot()
-        yield from self._iter_nodes(root, with_attributes=True)
-
-    def iter_results(self, results: Iterable[Any]) -> Iterator[Optional[ContextItemType]]:
+    def match_name(self, name: Optional[str] = None,
+                   default_namespace: Optional[str] = None) -> bool:
         """
-        Iterates results in document order.
+        Returns `True` if the context item is matching the name, `False` otherwise.
+
+        :param name: a fully qualified name, a local name or a wildcard. The accepted \
+        wildcard formats are '*', '*:*', '*:local-name' and '{namespace}*'.
+        :param default_namespace: the namespace URI associated with unqualified names. \
+        Used for matching element names (tag).
+        """
+        if self.axis == 'attribute':
+            if not isinstance(self.item, (AttributeNode, TypedAttribute)):
+                return False
+            item_name = self.item.name
+        elif is_element_node(self.item):
+            item_name = cast(ElementProtocol, self.item).tag
+        else:
+            return False
+
+        if name is None or name == '*' or name == '*:*':
+            return True
+
+        if not name:
+            return not item_name
+        elif name[0] == '*':
+            try:
+                _, _name = name.split(':')
+            except (ValueError, IndexError):
+                raise ElementPathValueError("unexpected format %r for argument 'name'" % name)
+            else:
+                if item_name.startswith('{'):
+                    return item_name.split('}')[1] == _name
+                else:
+                    return item_name == _name
+
+        elif name[-1] == '*':
+            if name[0] != '{' or '}' not in name:
+                raise ElementPathValueError("unexpected format %r for argument 'name'" % name)
+            elif item_name.startswith('{'):
+                return item_name.split('}')[0][1:] == name.split('}')[0][1:]
+            else:
+                return False
+        elif name[0] == '{' or not default_namespace:
+            return item_name == name
+        elif self.axis == 'attribute':
+            return item_name == name
+        else:
+            return item_name == '{%s}%s' % (default_namespace, name)
+
+    def iter(self, namespaces: Optional[Dict[str, str]] = None) \
+            -> Iterator[Union[ElementNode, DocumentNode, TextNode, NamespaceNode, AttributeNode]]:
+        """
+        Iterates context nodes in document order, including namespace and attribute nodes.
+
+        :param namespaces: a fallback mapping for generating namespaces nodes, \
+        used when element nodes do not have a property for in-scope namespaces.
+        """
+        item: Union[ElementNode, DocumentNode, TextNode]
+
+        for item in self._iter_nodes(self.root):
+            if not hasattr(item, 'tag'):
+                yield item
+            else:
+                elem = cast(ElementNode, item)
+                if callable(elem.tag):
+                    yield elem
+                    continue
+
+                nsmap: Optional[Dict[str, str]] = getattr(elem, 'nsmap', namespaces)
+                if nsmap is not None:
+                    for pfx, uri in nsmap.items():
+                        yield NamespaceNode(pfx, uri, elem)
+                    if 'xml' not in nsmap:
+                        yield NamespaceNode('xml', XML_NAMESPACE, elem)
+
+                yield elem
+
+                for name, value in elem.attrib.items():
+                    yield AttributeNode(name, value, elem)
+
+    def iter_results(self, results: Set[Any], namespaces: Optional[Dict[str, str]] = None) \
+            -> Iterator[Optional[ContextItemType]]:
+        """
+        Generate results in document order.
 
         :param results: a container with selection results.
+        :param namespaces: a fallback mapping for generating namespaces nodes, \
+        used when element nodes do not have a property for in-scope namespaces.
         """
-        status = self.item
+        status = self.root, self.item
+        roots: Any
+        root: Union[DocumentNode, ElementNode]
 
-        for self.item in self._iter_nodes(self.root, with_attributes=True):
-            if self.item in results:
-                yield self.item
+        documents = [v for v in results if is_document_node(v)]
+        documents.append(self.root)
+        documents.extend(v for v in self.variables.values() if is_document_node(v))
+        visited_docs = set()
 
-            elif isinstance(self.item, AttributeNode):
-                # Match XSD decoded attributes
-                for typed_attribute in filter(lambda x: isinstance(x, TypedAttribute), results):
-                    if typed_attribute.attribute == self.item:
-                        yield typed_attribute
+        for doc in documents:
+            if doc in visited_docs:
+                continue
+            visited_docs.add(doc)
 
-            elif is_etree_element(self.item):
-                # Match XSD decoded elements
-                for typed_element in filter(lambda x: isinstance(x, TypedElement), results):
-                    if typed_element.elem is self.item:
-                        yield typed_element
+            self.root = doc
+            for self.item in self.iter(namespaces):
+                if self.item in results:
+                    yield self.item
+                    results.remove(self.item)
 
-        self.item = status
+                elif isinstance(self.item, AttributeNode):
+                    # Match XSD decoded attributes
+                    for typed_attribute in filter(lambda x: isinstance(x, TypedAttribute), results):
+                        if typed_attribute.attribute == self.item:
+                            yield typed_attribute
+
+                elif is_etree_element(self.item):
+                    # Match XSD decoded elements
+                    for typed_element in filter(lambda x: isinstance(x, TypedElement), results):
+                        if typed_element.elem is self.item:
+                            yield typed_element
+
+        self.root, self.item = status
 
     def inner_focus_select(self, token: Union['XPathToken', 'XPathAxis']) -> Iterator[Any]:
         """Apply the token's selector with an inner focus."""
-        status = self.item, self.size, self.position
-        results = [x for x in token.select(copy(self))]
+        status = self.item, self.size, self.position, self.axis
+        results = [x for x in token.select(self.copy(clear_axis=False))]
+        self.axis = None
 
         if token.label == 'axis' and cast('XPathAxis', token).reverse_axis:
             self.size = self.position = len(results)
@@ -269,7 +391,7 @@ class XPathContext:
             for self.position, self.item in enumerate(results, start=1):
                 yield self.item
 
-        self.item, self.size, self.position = status
+        self.item, self.size, self.position, self.axis = status
 
     def iter_product(self, selectors: Sequence[Callable[[Any], Any]],
                      varnames: Optional[Sequence[str]] = None) -> Iterator[Any]:
@@ -336,13 +458,8 @@ class XPathContext:
             self.item = self.item.elem
 
         elem = cast(ElementNode, self.item)
-        if is_schema_node(elem):
-            # TODO: for backward compatibility, to be removed in release 3.0.
-            for self.item in (AttributeNode(*x) for x in elem.attrib.items()):
-                yield self.item
-        else:
-            for self.item in (AttributeNode(x[0], x[1], parent=elem) for x in elem.attrib.items()):
-                yield self.item
+        for self.item in (AttributeNode(x[0], x[1], parent=elem) for x in elem.attrib.items()):
+            yield self.item
 
         self.item, self.axis = status
 
@@ -361,13 +478,18 @@ class XPathContext:
         if self.item is None:
             if is_document_node(self.root):
                 document = cast(DocumentNode, self.root)
-                self.item = document.getroot()
+                root = document.getroot()
             else:
-                self.item = self.root
-            yield self.item
+                root = cast(ElementProtocol, self.root)
+
+            for self.item in etree_iter_root(root):
+                yield self.item
+
         elif is_etree_element(self.item):
             elem = cast(ElementNode, self.item)
-            if elem.text is not None:
+            if callable(elem.tag):
+                return
+            elif elem.text is not None:
                 self.item = TextNode(elem.text, elem)
                 yield self.item
 
@@ -381,8 +503,8 @@ class XPathContext:
 
         elif is_document_node(self.item):
             document = cast(DocumentNode, self.item)
-            self.item = document.getroot()
-            yield self.item
+            for self.item in etree_iter_root(document.getroot()):
+                yield self.item
 
         self.item, self.axis = status
 
@@ -390,8 +512,16 @@ class XPathContext:
         """Iterator for 'parent' reverse axis and '..' shortcut."""
         if isinstance(self.item, TypedElement):
             parent = self.get_parent(self.item.elem)
+        elif isinstance(self.item, TextNode):
+            parent = self.item.parent
+            if parent is not None and (callable(parent.tag) or self.item.is_tail()):
+                parent = self.get_parent(parent)
+        elif isinstance(self.item, XPathNode):
+            parent = self.item.parent
+        elif hasattr(self.item, 'tag'):
+            parent = self.get_parent(cast(ElementNode, self.item))
         else:
-            parent = self.get_parent(self.item)
+            return  # not applicable
 
         if parent is not None:
             status = self.item, self.axis
@@ -402,7 +532,8 @@ class XPathContext:
 
             self.item, self.axis = status
 
-    def iter_siblings(self, axis: Optional[str] = None) -> Iterator[ElementNode]:
+    def iter_siblings(self, axis: Optional[str] = None) \
+            -> Iterator[Union[ElementNode, TextNode]]:
         """
         Iterator for 'following-sibling' forward axis and 'preceding-sibling' reverse axis.
 
@@ -428,12 +559,18 @@ class XPathContext:
                     break
                 self.item = child
                 yield child
+                if child.tail is not None:
+                    self.item = TextNode(child.tail, child, True)
+                    yield self.item
         else:
             follows = False
             for child in parent:
                 if follows:
                     self.item = child
                     yield child
+                    if child.tail is not None:
+                        self.item = TextNode(child.tail, child, True)
+                        yield self.item
                 elif child is item:
                     follows = True
 
@@ -449,6 +586,7 @@ class XPathContext:
         In this case set the context size at start and change both position and \
         item at each iteration. For default only context item is changed.
         """
+        descendants: Union[Iterator[Union[XPathNodeType, None]], Tuple[XPathNode]]
         with_self = axis != 'descendant'
 
         if self.item is None:
@@ -462,7 +600,7 @@ class XPathContext:
                 descendants = self._iter_nodes(self.root)
         elif is_element_node(self.item) or is_document_node(self.item):
             descendants = self._iter_nodes(self.item, with_root=with_self)
-        elif with_self:
+        elif with_self and isinstance(self.item, XPathNode):
             descendants = self.item,
         else:
             return
@@ -484,30 +622,41 @@ class XPathContext:
                 yield self.item
             self.item, self.axis = status_
 
-    def iter_ancestors(self, axis: Optional[str] = None) -> Iterator[ContextRootType]:
+    def iter_ancestors(self, axis: Optional[str] = None) -> Iterator[XPathNodeType]:
         """
         Iterator for 'ancestor' and 'ancestor-or-self' reverse axes.
 
         :param axis: the context axis, default is 'ancestor'.
         """
+        if isinstance(self.item, TypedElement):
+            parent = self.get_parent(self.item.elem)
+        elif isinstance(self.item, TextNode):
+            parent = self.item.parent
+            if parent is not None and (callable(parent.tag) or self.item.is_tail()):
+                parent = self.get_parent(parent)
+        elif isinstance(self.item, XPathNode):
+            parent = self.item.parent
+        elif isinstance(self.item, AnyAtomicType):
+            return
+        elif self.item is None:
+            return  # document position without a document root
+        elif hasattr(self.item, 'tag'):
+            parent = self.get_parent(cast(ElementNode, self.item))
+        elif is_document_node(self.item):
+            parent = None
+        else:
+            return  # is not an XPath node
+
         status = self.item, self.axis
         self.axis = axis or 'ancestor'
 
-        if isinstance(self.item, TypedElement):
-            elem = self.item.elem
-        elif is_element_node(self.item):
-            elem = cast(ElementNode, self.item)
-        else:
-            return
+        ancestors: List[Union[ElementNode, DocumentNode, XPathNode]] = []
+        if axis == 'ancestor-or-self':
+            ancestors.append(self.item)
 
-        ancestors: List[Union[ElementNode, DocumentNode]] = []
-        if self.axis == 'ancestor-or-self':
-            ancestors.append(elem)
-
-        parent = self.get_parent(elem)
         while parent is not None:
             ancestors.append(parent)
-            parent = self.get_parent(parent)
+            parent = self.get_parent(parent)  # type: ignore[arg-type]
 
         for self.item in reversed(ancestors):
             yield self.item
@@ -516,34 +665,45 @@ class XPathContext:
 
     def iter_preceding(self) -> Iterator[ElementNode]:
         """Iterator for 'preceding' reverse axis."""
-        item = self.item.elem if isinstance(self.item, TypedElement) else self.item
-        if not is_etree_element(item) or item is self.root \
-                or callable(getattr(item, 'tag')):
+        item: Union[ElementNode, XPathNode]
+        parent: Union[None, ElementNode, DocumentNode]
+
+        if isinstance(self.item, TypedElement):
+            item = self.item.elem
+            parent = self.get_parent(item)
+        elif isinstance(self.item, XPathNode):
+            item = self.item
+            parent = item.parent
+            if parent is None:
+                return
+            if callable(parent.tag):
+                parent = self.get_parent(parent)
+        elif is_element_node(self.item):
+            item = cast(ElementNode, self.item)
+            if item is self.root:
+                return
+            parent = self.get_parent(item)
+        else:
             return
 
         status = self.item, self.axis
         self.axis = 'preceding'
 
-        ancestors = []
-        elem = item
-        while True:
-            parent = self.get_parent(elem)
-            if parent is None:
-                break
-            else:
-                ancestors.append(parent)
-                elem = parent
+        ancestors = set()
+        while parent is not None:
+            ancestors.add(parent)
+            parent = self.get_parent(parent)  # type: ignore[arg-type]
 
-        for elem in self.root.iter():  # pragma: no cover
+        for elem in self._iter_nodes(self.root):  # pragma: no cover
             if elem is item:
                 break
             elif elem not in ancestors:
-                self.item = elem
-                yield elem
+                self.item = cast(ElementNode, elem)
+                yield self.item
 
         self.item, self.axis = status
 
-    def iter_followings(self) -> Iterator[ElementNode]:
+    def iter_followings(self) -> Iterator[XPathNodeType]:
         """Iterator for 'following' forward axis."""
         status = self.item, self.axis
         self.axis = 'following'
@@ -558,12 +718,12 @@ class XPathContext:
 
         descendants = set(self._iter_nodes(self.item))
         follows = False
-        for elem in self._iter_nodes(self.root):
+        for item in self._iter_nodes(self.root):
             if follows:
-                if elem not in descendants:
-                    self.item = elem
-                    yield elem
-            elif self.item is elem:
+                if item not in descendants:
+                    self.item = item
+                    yield item
+            elif self.item is item:
                 follows = True
 
         self.item, self.axis = status

@@ -10,33 +10,34 @@
 """
 XPath 1.0 implementation - part 1 (parser class and symbols)
 """
-import sys
 import re
 from typing import cast, Any, ClassVar, Dict, FrozenSet, MutableMapping, \
     Optional, Tuple, Type, Union, Set
 
-from ..helpers import EQNAME_PATTERN, normalize_sequence_type
+from ..helpers import OCCURRENCE_INDICATORS, EQNAME_PATTERN, normalize_sequence_type
 from ..exceptions import MissingContextError, ElementPathKeyError, \
     ElementPathValueError, xpath_error
 from ..protocols import XsdTypeProtocol
 from ..datatypes import AnyAtomicType, NumericProxy, UntypedAtomic, QName, \
     xsd10_atomic_types, xsd11_atomic_types, ATOMIC_VALUES, AtomicValueType
 from ..tdop import Parser
-from ..namespaces import NamespacesType, XML_NAMESPACE, XSD_NAMESPACE, \
+from ..namespaces import NamespacesType, XML_NAMESPACE, XSD_NAMESPACE, XSD_ERROR, \
     XPATH_FUNCTIONS_NAMESPACE, XPATH_MATH_FUNCTIONS_NAMESPACE, XSD_ANY_SIMPLE_TYPE, \
     XSD_ANY_ATOMIC_TYPE, XSD_UNTYPED_ATOMIC, get_namespace, get_expanded_name, \
     split_expanded_name
 from ..schema_proxy import AbstractSchemaProxy
 from ..xpath_token import NargsType, XPathToken, XPathAxis, XPathFunction
-from ..xpath_nodes import is_xpath_node, node_kind
+from ..xpath_nodes import is_xpath_node, node_nilled, node_kind, node_name, \
+    TypedAttribute, TypedElement
 
-if sys.version_info < (3, 7):
-    ParserType = Parser
-else:
-    ParserType = Parser[XPathToken]
+COMMON_SEQUENCE_TYPES = {
+    'xs:untyped', 'untypedAtomic', 'attribute()', 'attribute(*)',
+    'element()', 'element(*)', 'text()', 'document-node()', 'comment()',
+    'processing-instruction()', 'item()', 'node()', 'numeric'
+}
 
 
-class XPath1Parser(ParserType):
+class XPath1Parser(Parser[XPathToken]):
     """
     XPath 1.0 expression parser class. Provide a *namespaces* dictionary argument for
     mapping namespace prefixes to URI inside expressions. If *strict* is set to `False`
@@ -105,11 +106,8 @@ class XPath1Parser(ParserType):
     function_namespace = XPATH_FUNCTIONS_NAMESPACE
     function_signatures: Dict[Tuple[QName, int], str] = {}
 
-    # https://www.w3.org/TR/xpath-3/#id-reserved-fn-names
     RESERVED_FUNCTION_NAMES = {
-        'array', 'attribute', 'comment', 'document-node', 'element', 'empty-sequence',
-        'function', 'if', 'item', 'map', 'namespace-node', 'node', 'processing-instruction',
-        'schema-attribute', 'schema-element', 'switch', 'text', 'typeswitch',
+        'comment', 'element', 'node', 'processing-instruction', 'text'
     }
 
     def __init__(self, namespaces: Optional[NamespacesType] = None, strict: bool = True,
@@ -132,6 +130,11 @@ class XPath1Parser(ParserType):
         namespace is ignored (see https://www.w3.org/TR/1999/REC-xpath-19991116/#node-tests).
         """
         return None
+
+    @property
+    def other_namespaces(self) -> Dict[str, str]:
+        """The subset of namespaces not provided by default."""
+        return {k: v for k, v in self.namespaces.items() if k not in self.DEFAULT_NAMESPACES}
 
     @property
     def xsd_version(self) -> str:
@@ -224,7 +227,7 @@ class XPath1Parser(ParserType):
         """
         if self.next_token.symbol in symbols:
             return
-        elif self.next_token.label == 'operator' and \
+        elif self.next_token.label in ('operator', 'symbol', 'let expression') and \
                 self.name_pattern.match(self.next_token.symbol) is not None:
             token_class = self.symbol_table['(name)']
             self.next_token = token_class(self, self.next_token.symbol)
@@ -236,7 +239,9 @@ class XPath1Parser(ParserType):
     def is_instance(self, obj: Any, type_qname: str) -> bool:
         """Checks an instance against an XSD type."""
         if get_namespace(type_qname) == XSD_NAMESPACE:
-            if type_qname == XSD_UNTYPED_ATOMIC:
+            if type_qname == XSD_ERROR:
+                return obj is None or obj == []
+            elif type_qname == XSD_UNTYPED_ATOMIC:
                 return isinstance(obj, UntypedAtomic)
             elif type_qname == XSD_ANY_ATOMIC_TYPE:
                 return isinstance(obj, AnyAtomicType)
@@ -271,12 +276,10 @@ class XPath1Parser(ParserType):
             return False
         elif value == 'empty-sequence()' or value == 'none':
             return True
-        elif value[-1] in {'?', '+', '*'}:
+        elif value[-1] in OCCURRENCE_INDICATORS:
             value = value[:-1]
 
-        if value in {'untypedAtomic', 'attribute()', 'attribute(*)', 'element()',
-                     'element(*)', 'text()', 'document-node()', 'comment()',
-                     'processing-instruction()', 'item()', 'node()', 'numeric'}:
+        if value in COMMON_SEQUENCE_TYPES:
             return True
 
         elif value.startswith('element(') and value.endswith(')'):
@@ -297,8 +300,15 @@ class XPath1Parser(ParserType):
             return self.is_sequence_type(value[14:-1])
 
         elif value.startswith('function('):
-            if value == 'function(*)' and self.version >= '3.0':
-                return True
+            if self.version >= '3.0':
+                if value == 'function(*)':
+                    return True
+                elif ' as ' in value:
+                    pass
+                elif not value.endswith(')'):
+                    return False
+                else:
+                    return self.is_sequence_type(value[9:-1])
 
             try:
                 value, return_type = value.rsplit(' as ', 1)
@@ -381,11 +391,11 @@ class XPath1Parser(ParserType):
         :param sequence_type: a string containing the sequence type spec.
         :param occurrence: an optional occurrence spec, can be '?', '+' or '*'.
         """
-        if sequence_type[-1] in {'?', '+', '*'}:
+        if sequence_type[-1] in OCCURRENCE_INDICATORS:
             return self.match_sequence_type(value, sequence_type[:-1], sequence_type[-1])
         elif value is None or isinstance(value, list) and value == []:
-            return sequence_type == 'empty-sequence()' or occurrence in {'?', '*'}
-        elif sequence_type == 'empty-sequence()':
+            return sequence_type in ('empty-sequence()', 'none') or occurrence in ('?', '*')
+        elif sequence_type in ('empty-sequence()', 'none'):
             return False
         elif isinstance(value, list):
             if len(value) == 1:
@@ -395,17 +405,58 @@ class XPath1Parser(ParserType):
             else:
                 return all(self.match_sequence_type(x, sequence_type) for x in value)
         elif sequence_type == 'item()':
-            return is_xpath_node(value) or isinstance(value, (AnyAtomicType, list))
+            return is_xpath_node(value) or isinstance(value, (AnyAtomicType, list, XPathFunction))
         elif sequence_type == 'numeric':
             return isinstance(value, NumericProxy)
+        elif sequence_type.startswith('function('):
+            if not isinstance(value, XPathFunction):
+                return False
+            return value.match_function_test(sequence_type)
 
         value_kind = node_kind(value)
-        if value_kind is not None:
-            return sequence_type == 'node()' or sequence_type == '%s()' % value_kind
+        if value_kind is None:
+            try:
+                type_expanded_name = get_expanded_name(sequence_type, self.namespaces)
+                return self.is_instance(value, type_expanded_name)
+            except (KeyError, ValueError):
+                return False
+        elif sequence_type == 'node()':
+            return True
+        elif not sequence_type.startswith(value_kind) or not sequence_type.endswith(')'):
+            return False
+        elif sequence_type == f'{value_kind}()':
+            return True
+        elif value_kind == 'document-node':
+            return self.match_sequence_type(value.getroot(), sequence_type[14:-1])
+        elif value_kind not in ('element', 'attribute'):
+            return False
+
+        _, params = sequence_type[:-1].split('(')
+        if ',' not in sequence_type:
+            name = params
+        else:
+            name, type_name = params.split(',')
+            if type_name.endswith('?'):
+                type_name = type_name[:-1]
+            elif node_nilled(value):
+                return False
+
+            if type_name == 'xs:untyped':
+                if isinstance(value, (TypedAttribute, TypedElement)):
+                    return False
+            else:
+                try:
+                    type_expanded_name = get_expanded_name(type_name, self.namespaces)
+                    if not self.is_instance(value, type_expanded_name):
+                        return False
+                except (KeyError, ValueError):
+                    return False
+
+        if name == '*':
+            return True
 
         try:
-            type_qname = get_expanded_name(sequence_type, self.namespaces)
-            return self.is_instance(value, type_qname)
+            return node_name(value) == get_expanded_name(name, self.namespaces)
         except (KeyError, ValueError):
             return False
 
@@ -427,7 +478,7 @@ XPath1Parser.literal('(float)')
 XPath1Parser.literal('(decimal)')
 XPath1Parser.literal('(integer)')
 XPath1Parser.literal('(invalid)')
-XPath1Parser.literal('(unknown)')
+XPath1Parser.register('(unknown)')
 
 ###
 # Simple symbols

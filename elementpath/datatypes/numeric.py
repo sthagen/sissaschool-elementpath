@@ -11,7 +11,7 @@ import re
 import math
 from typing import Any, Optional, SupportsFloat, SupportsInt, Union, Type
 
-from ..helpers import collapse_white_spaces
+from ..helpers import NUMERIC_INF_OR_NAN, INVALID_NUMERIC, collapse_white_spaces
 from .atomic_types import AtomicTypeMeta, AnyAtomicType
 
 
@@ -25,20 +25,19 @@ class Float10(float, AnyAtomicType):
     def __new__(cls, value: Union[str, SupportsFloat]) -> 'Float10':
         if isinstance(value, str):
             value = collapse_white_spaces(value)
-            if value in {'INF', '-INF', 'NaN'} or cls.xsd_version != '1.0' and value == '+INF':
+            if value in NUMERIC_INF_OR_NAN or cls.xsd_version != '1.0' and value == '+INF':
                 pass
-            elif value.lower() in {'inf', '+inf', '-inf', 'nan',
-                                   'infinity', '+infinity', '-infinity'}:
+            elif value.lower() in INVALID_NUMERIC:
                 raise ValueError('invalid value {!r} for xs:{}'.format(value, cls.name))
 
-        value = super().__new__(cls, value)
-        if value > 3.4028235E38:
+        _value = super().__new__(cls, value)
+        if _value > 3.4028235E38:
             return super().__new__(cls, 'INF')
-        elif value < -3.4028235E38:
+        elif _value < -3.4028235E38:
             return super().__new__(cls, '-INF')
-        elif -1e-37 < value < 1e-37:
-            return super().__new__(cls, -0.0 if str(value).startswith('-') else 0.0)
-        return value
+        elif -1e-37 < _value < 1e-37:
+            return super().__new__(cls, -0.0 if str(_value).startswith('-') else 0.0)
+        return _value
 
     def __hash__(self) -> int:
         return super(Float10, self).__hash__()

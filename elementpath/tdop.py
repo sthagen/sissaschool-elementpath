@@ -12,22 +12,17 @@ This module contains base classes and helper functions for defining Pratt parser
 """
 import sys
 import re
+from abc import ABCMeta
 from unicodedata import name as unicode_name
 from decimal import Decimal, DecimalException
-from itertools import takewhile
 from typing import Any, cast, overload, no_type_check_decorator, Callable, \
     ClassVar, FrozenSet, Dict, Generic, List, Optional, Union, Tuple, Type, \
     Pattern, Match, MutableMapping, MutableSequence, Iterator, Set, TypeVar
 
-if sys.version_info < (3, 7):
-    from typing import GenericMeta as ABCMeta
-else:
-    from abc import ABCMeta
-
 from .datatypes import AtomicValueType
 
 #
-# Simple top down parser based on Vaughan Pratt's algorithm (Top Down Operator Precedence).
+# Simple top-down parser based on Vaughan Pratt's algorithm (Top Down Operator Precedence).
 #
 # References:
 #
@@ -41,7 +36,7 @@ from .datatypes import AtomicValueType
 #
 # A parser can be extended by derivation, copying the reusable token classes and
 # defining the additional ones. See the files xpath1_parser.py and xpath2_parser.py
-# for a fully implementation example of a real parser.
+# for a full implementation example of a real parser.
 #
 
 # Parser special symbols set, that includes the special symbols of TDOP plus two
@@ -52,18 +47,12 @@ SPECIAL_SYMBOLS = frozenset((
     '(integer)', '(name)', '(invalid)', '(unknown)',
 ))
 
-SPACE_PATTERN = re.compile(r'\s')
-
 
 class ParseError(SyntaxError):
     """An error when parsing source with TDOP parser."""
 
 
-def count_leading_spaces(s: str) -> int:
-    return sum(1 for _ in takewhile(str.isspace, s))
-
-
-def symbol_to_classname(symbol: str) -> str:
+def _symbol_to_classname(symbol: str) -> str:
     """
     Converts a symbol string to an identifier (only alphanumeric and '_').
     """
@@ -213,7 +202,7 @@ class Token(MutableSequence[TK]):
         if self.symbol in SPECIAL_SYMBOLS:
             return '%r %s' % (self.value, self.symbol[1:-1])
         else:
-            return '%r %s' % (self.symbol, self.label)
+            return '%r %s' % (self.symbol, str(self.label))
 
     def __repr__(self) -> str:
         symbol, value = self.symbol, self.value
@@ -295,19 +284,43 @@ class Token(MutableSequence[TK]):
 
     def iter(self, *symbols: str) -> Iterator['Token[TK]']:
         """Returns a generator for iterating the token's tree."""
-        if not self:
-            if not symbols or self.symbol in symbols:
-                yield self
-        elif len(self) == 1:
-            if not symbols or self.symbol in symbols:
-                yield self
-            yield from self[0].iter(*symbols)
-        else:
-            yield from self[0].iter(*symbols)
-            if not symbols or self.symbol in symbols:
-                yield self
-            for t in self._items[1:]:
-                yield from t.iter(*symbols)
+        status: List[Tuple[Optional['Token[TK]'], Iterator['Token[TK]']]] = []
+        parent: Optional['Token[TK]'] = self
+        children: Iterator['Token[TK]'] = iter(self)
+        tk: 'Token[TK]'
+
+        while True:
+            try:
+                tk = next(children)
+            except StopIteration:
+                try:
+                    parent, children = status.pop()
+                except IndexError:
+                    if parent is not None:
+                        if not symbols or parent.symbol in symbols:
+                            yield parent
+                    return
+                else:
+                    if parent is not None:
+                        if not symbols or parent.symbol in symbols:
+                            yield parent
+                        parent = None
+            else:
+                if parent is not None and len(parent._items) == 1:
+                    if not symbols or parent.symbol in symbols:
+                        yield parent
+                    parent = None
+
+                if not tk._items:
+                    if not symbols or tk.symbol in symbols:
+                        yield tk
+                    if parent is not None:
+                        if not symbols or parent.symbol in symbols:
+                            yield parent
+                        parent = None
+                    continue
+                status.append((parent, children))
+                parent, children = tk, iter(tk)
 
     def expected(self, *symbols: str, message: Optional[str] = None) -> None:
         if symbols and self.symbol not in symbols:
@@ -365,7 +378,7 @@ class ParserMeta(ABCMeta):
             cls.token_base_class = Token
         if not hasattr(cls, 'literals_pattern'):
             cls.literals_pattern = re.compile(
-                    r"""'[^']*'|"[^"]*"|(?:\d+|\.\d+)(?:\.\d*)?(?:[Ee][+-]?\d+)?"""
+                r"""'[^']*'|"[^"]*"|(?:\d+|\.\d+)(?:\.\d*)?(?:[Ee][+-]?\d+)?"""
             )
         if not hasattr(cls, 'name_pattern'):
             cls.name_pattern = re.compile(r'[A-Za-z0-9_]+')
@@ -468,6 +481,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         parse error.
         :return: The next token instance.
         """
+        value: Any
         if self.next_token.symbol == '(end)' or \
                 symbols and self.next_token.symbol not in symbols:
             raise self.next_token.wrong_syntax()
@@ -518,7 +532,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
                     break
                 elif unknown is not None:
                     self.next_token = self.symbol_table['(unknown)'](self, unknown)
-                    raise self.next_token.wrong_syntax()
+                    break
                 elif str(self.next_match.group()).strip():
                     msg = "unexpected matching %r: incompatible tokenizer"
                     raise RuntimeError(msg % self.next_match.group())
@@ -657,7 +671,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
                     label = kwargs['label'] = MultiLabel(*label)
 
                 token_class_name = "_{}{}".format(
-                    symbol_to_classname(symbol), str(label).title().replace(' ', '')
+                    _symbol_to_classname(symbol), str(label).title().replace(' ', '')
                 )
                 token_class_bases = kwargs.get('bases', (cls.token_base_class,))
                 kwargs.update({
