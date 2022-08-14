@@ -81,6 +81,8 @@ XPathResultType = Union[
 ]
 
 XPathTokenType = Union['XPathToken', 'XPathAxis', 'XPathFunction', 'XPathConstructor']
+XPathFunctionArgType = Union[None, 'XPathToken', XPathNode, AtomicValueType,
+                             List[Union['XPathToken', XPathNode, AtomicValueType]]]
 
 
 class XPathToken(Token[XPathTokenType]):
@@ -581,7 +583,7 @@ class XPathToken(Token[XPathTokenType]):
         a function or a constructor, otherwise a syntax error is raised. Functions
         and constructors must be limited to its namespaces.
         """
-        if self.symbol in ('(name)', '*'):
+        if self.symbol in ('(name)', '*') or isinstance(self, ProxyToken):
             pass
         elif namespace == self.parser.function_namespace:
             if self.label != 'function':
@@ -601,8 +603,11 @@ class XPathToken(Token[XPathTokenType]):
                 raise self.wrong_syntax(msg, code='XPST0017')
             elif isinstance(self.label, MultiLabel):
                 self.label = 'math function'
-        else:
+        elif not self.label.endswith('function'):
             msg = "a name, a wildcard or a function expected"
+            raise self.wrong_syntax(msg, code='XPST0017')
+        elif self.namespace and namespace != self.namespace:
+            msg = "unmatched namespace"
             raise self.wrong_syntax(msg, code='XPST0017')
 
         self.namespace = namespace
@@ -1133,6 +1138,33 @@ class ValueToken(XPathToken):
             yield self.value
 
 
+class ProxyToken(XPathToken):
+    """
+    A proxy token for resolving or calling namespace related functions.
+    TODO: adding dynamic function definitions and resolving possible conflicts
+      for axes (e.g.: defining tns:child() function)
+    """
+    label = 'proxy function'
+
+    def nud(self) -> XPathToken:
+        namespace = self.namespace or XPATH_FUNCTIONS_NAMESPACE
+        expanded_name = '{%s}%s' % (namespace, self.value)
+        try:
+            token = self.parser.symbol_table[expanded_name](self.parser)
+        except KeyError:
+            if self.namespace == XSD_NAMESPACE:
+                raise self.error('XPST0017',
+                                 'unknown constructor function {!r}'.format(self.symbol))
+            else:
+                raise self.error('XPST0017', 'unknown function {!r}'.format(self.symbol))
+        else:
+            if self.parser.next_token.symbol == '#':
+                if self.parser.version >= '2.0':
+                    return token
+
+            return token.nud()
+
+
 class XPathFunction(XPathToken):
     """
     A token for processing XPath functions.
@@ -1168,25 +1200,7 @@ class XPathFunction(XPathToken):
                 self.nargs = nargs
 
     def __call__(self, context: Optional[XPathContext] = None,
-                 argument_list: Optional[Union[
-                     XPathToken,
-                     List[Union[XPathToken, AtomicValueType]],
-                     Tuple[Union[XPathToken, AtomicValueType], ...]
-                 ]] = None) -> Any:
-
-        args: List[Any] = []
-        if isinstance(argument_list, (list, tuple)):
-            args.extend(argument_list)
-        elif isinstance(argument_list, XPathToken):
-            tk = argument_list
-            while True:
-                if tk.symbol == ',':
-                    args.append(tk[1].evaluate(context))
-                    tk = tk[0]
-                else:
-                    args.append(tk.evaluate(context))
-                    break
-            args.reverse()
+                 *args: XPathFunctionArgType) -> Any:
 
         # Check provided argument with arity
         if self.nargs is None or self.nargs == len(args):
@@ -1215,7 +1229,7 @@ class XPathFunction(XPathToken):
                     else:
                         context.item = context.root
 
-                args.append(context.item)
+                args = cast(Tuple[Union[XPathNode, XPathToken, AtomicValueType]], (context.item,))
 
             partial_function = False
             if self.variables is None:
@@ -1248,16 +1262,14 @@ class XPathFunction(XPathToken):
                 if isinstance(value, XPathToken):
                     tk.value = value.evaluate(context)
                 else:
-                    assert not isinstance(value, Token), "An atomic value or None expected"
                     tk.value = value
         else:
             self.clear()
             for value in args:
                 if isinstance(value, XPathToken):
-                    self.append(value)
+                    self._items.append(value)
                 else:
-                    assert not isinstance(value, Token), "An atomic value or None expected"
-                    self.append(ValueToken(self.parser, value=value))
+                    self._items.append(ValueToken(self.parser, value=value))
 
             if any(tk.symbol == '?' for tk in self._items):
                 self._partial_function()
@@ -1519,3 +1531,133 @@ class XPathConstructor(XPathFunction):
     @staticmethod
     def cast(value: Any) -> AtomicValueType:
         raise NotImplementedError()
+
+
+class XPathMap(XPathFunction):
+    """
+    A token for processing XPath 3.1+ maps.
+    """
+    pattern = r'(?<!\$)\bmap(?=\s*(?:\(\:.*\:\))?\s*\{(?!\:))'
+    _map: Optional[Dict[AnyAtomicType, Any]] = None
+    _values: List[XPathToken]
+
+    def __init__(self, parser: 'XPath1Parser', nargs: Optional[int] = None) -> None:
+        self._values = []
+        super().__init__(parser, nargs)
+
+    def nud(self) -> 'XPathMap':
+        self.parser.advance('{')
+        del self._items[:]
+        if self.parser.next_token.symbol not in ('}', '(end)'):
+            while True:
+                key = self.parser.expression(95)  # ':'
+                self._items.append(key)
+                self.parser.advance(':')
+                self._values.append(self.parser.expression(5))
+
+                if self.parser.next_token.symbol != ',':
+                    break
+                self.parser.advance()
+
+        self.parser.advance('}')
+        return self
+
+    def evaluate(self, context: Optional[XPathContext] = None) -> Any:
+        _map = {}
+        for key, value in zip(self._items, self._values):
+            k = next(key.atomization(context), None)
+            if k is None:
+                self.error('XPST0003', 'missing key value')
+            assert k is not None
+            _map[k] = value.evaluate(context)
+
+        self._map = cast(Dict[AnyAtomicType, Any], _map)
+        return self
+
+    def __call__(self, context: Optional[XPathContext] = None,
+                 *args: XPathFunctionArgType) -> Any:
+        if len(args) != 1 or not isinstance(args[0], AnyAtomicType):
+            self.error('XPST0003', 'exactly one atomic argument is expected')
+
+        key = cast(AnyAtomicType, args[0])
+        if self._map is None:
+            self.evaluate(context)
+            assert self._map is not None
+        return self._map.get(key)
+
+    def keys(self, context: Optional[XPathContext] = None) -> List[AnyAtomicType]:
+        if self._map is None:
+            self.evaluate(context)
+            assert self._map is not None
+        return list(self._map.keys())
+
+    def contains(self, context: Optional[XPathContext] = None,
+                 key: Optional[AnyAtomicType] = None) -> bool:
+        if self._map is None:
+            self.evaluate(context)
+            assert self._map is not None
+        return key in self._map.keys()
+
+
+class XPathArray(XPathFunction):
+    """
+    A token for processing XPath 3.1+ arrays.
+    """
+    pattern = r'(?<!\$)\barray(?=\s*(?:\(\:.*\:\))?\s*\{(?!\:))'
+    _array: Optional[List[Any]] = None
+
+    def nud(self) -> 'XPathArray':
+        self.value = None
+        self.parser.advance('{')
+        del self._items[:]
+        if self.parser.next_token.symbol not in ('}', '(end)'):
+            while True:
+                self._items.append(self.parser.expression(5))
+                if self.parser.next_token.symbol != ',':
+                    break
+                self.parser.advance()
+
+        self.parser.advance('}')
+        return self
+
+    def evaluate(self, context: Optional[XPathContext] = None) -> Any:
+        _array: List[Any] = []
+        for tk in self._items:
+            _array.extend(tk.select(context))
+        self._array = _array
+        return self
+
+    def __call__(self, context: Optional[XPathContext] = None,
+                 *args: XPathFunctionArgType) -> Any:
+        if len(args) != 1 or not isinstance(args[0], int):
+            self.error('XPST0003', 'exactly one xs:integer argument is expected')
+
+        position = cast(int, args[0])
+        if position <= 0:
+            self.error('FOAY0002' if position else 'FOAY0001')
+
+        if self._array is None:
+            self.evaluate(context)
+            assert self._array is not None
+
+        try:
+            return self._array[position - 1]
+        except IndexError:
+            self.error('FOAY0001')
+
+    def put(self, position: int, member: Any, context: Optional[XPathContext] = None) \
+            -> 'XPathArray':
+        if position <= 0:
+            self.error('FOAY0002' if position else 'FOAY0001')
+
+        other = XPathArray(self.parser)
+        other.extend(self._items)
+        other.evaluate(context)
+        assert other._array is not None
+
+        try:
+            other._array[position - 1] = member
+        except IndexError:
+            self.error('FOAY0001')
+
+        return other

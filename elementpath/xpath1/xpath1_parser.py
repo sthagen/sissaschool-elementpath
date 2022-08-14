@@ -22,10 +22,10 @@ from ..datatypes import AnyAtomicType, NumericProxy, UntypedAtomic, QName, \
     xsd10_atomic_types, xsd11_atomic_types
 from ..tdop import Token, Parser
 from ..namespaces import NamespacesType, XML_NAMESPACE, XSD_NAMESPACE, XSD_ERROR, \
-    XPATH_FUNCTIONS_NAMESPACE, XPATH_MATH_FUNCTIONS_NAMESPACE, XSD_ANY_SIMPLE_TYPE, \
-    XSD_ANY_ATOMIC_TYPE, XSD_UNTYPED_ATOMIC, get_namespace, get_expanded_name
+    XPATH_FUNCTIONS_NAMESPACE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE, \
+    XSD_UNTYPED_ATOMIC, get_namespace, get_expanded_name
 from ..schema_proxy import AbstractSchemaProxy
-from ..xpath_token import NargsType, XPathToken, XPathAxis, XPathFunction
+from ..xpath_token import NargsType, XPathToken, XPathAxis, XPathFunction, ProxyToken
 from ..xpath_nodes import XPathNode, ElementNode, AttributeNode, DocumentNode
 
 COMMON_SEQUENCE_TYPES = {
@@ -163,6 +163,17 @@ class XPath1Parser(Parser[XPathToken]):
             return string_literal[1:-1].replace('""', '"')
 
     @classmethod
+    def proxy(cls, symbol: str, label: str = 'proxy', bp: int = 90) -> Type[ProxyToken]:
+        """Register a proxy token for a symbol."""
+        if symbol in cls.symbol_table and not issubclass(cls.symbol_table[symbol], ProxyToken):
+            # Move the token class before register the proxy token
+            token_cls = cls.symbol_table.pop(symbol)
+            cls.symbol_table[f'{{{token_cls.namespace}}}{symbol}'] = token_cls
+
+        proxy_class = cls.register(symbol, bases=(ProxyToken,), label=label, lbp=bp, rbp=bp)
+        return cast(Type[ProxyToken], proxy_class)
+
+    @classmethod
     def axis(cls, symbol: str, reverse_axis: bool = False, bp: int = 80) -> Type[XPathAxis]:
         """Register a token for a symbol that represents an XPath *axis*."""
         token_class = cls.register(symbol, label='axis', bases=(XPathAxis,),
@@ -171,23 +182,40 @@ class XPath1Parser(Parser[XPathToken]):
 
     @classmethod
     def function(cls, symbol: str,
+                 prefix: Optional[str] = None,
+                 label: str = 'function',
                  nargs: NargsType = None,
                  sequence_types: Tuple[str, ...] = (),
-                 label: str = 'function',
                  bp: int = 90) -> Type[XPathFunction]:
         """
         Registers a token class for a symbol that represents an XPath function.
         """
+        kwargs = {
+            'bases': (XPathFunction,),
+            'label': label,
+            'nargs': nargs,
+            'lbp': bp,
+            'rbp': bp,
+        }
         if 'function' not in label:
-            pass  # kind test or sequence type
+            # kind test or sequence type
+            return cast(Type[XPathFunction], cls.register(symbol, **kwargs))
         elif symbol in cls.RESERVED_FUNCTION_NAMES:
             raise ElementPathValueError(f'{symbol!r} is a reserved function name')
-        elif sequence_types:
+
+        if prefix:
+            namespace = cls.DEFAULT_NAMESPACES[prefix]
+            qname = QName(namespace, '%s:%s' % (prefix, symbol))
+            kwargs['lookup_name'] = qname.expanded_name
+            kwargs['namespace'] = namespace
+            cls.proxy(symbol, label='proxy function', bp=bp)
+        else:
+            qname = QName(XPATH_FUNCTIONS_NAMESPACE, 'fn:%s' % symbol)
+            kwargs['namespace'] = XPATH_FUNCTIONS_NAMESPACE
+
+        if sequence_types:
             # Register function signature(s)
-            if label == 'math function':
-                qname = QName(XPATH_MATH_FUNCTIONS_NAMESPACE, 'math:%s' % symbol)
-            else:
-                qname = QName(XPATH_FUNCTIONS_NAMESPACE, 'fn:%s' % symbol)
+            kwargs['sequence_types'] = sequence_types
 
             if nargs is None:
                 pass  # pragma: no cover
@@ -208,9 +236,7 @@ class XPath1Parser(Parser[XPathToken]):
                         ', '.join(sequence_types[:arity]), sequence_types[-1]
                     )
 
-        token_class = cls.register(symbol, nargs=nargs, sequence_types=sequence_types,
-                                   label=label, bases=(XPathFunction,), lbp=bp, rbp=bp)
-        return cast(Type[XPathFunction], token_class)
+        return cast(Type[XPathFunction], cls.register(symbol, **kwargs))
 
     def parse(self, source: str) -> XPathToken:
         root_token = super(XPath1Parser, self).parse(source)
@@ -231,8 +257,8 @@ class XPath1Parser(Parser[XPathToken]):
         """
         if self.next_token.symbol in symbols:
             return
-        elif self.next_token.label in ('operator', 'symbol', 'let expression') and \
-                self.name_pattern.match(self.next_token.symbol) is not None:
+        elif self.next_token.label in ('operator', 'symbol', 'let expression', 'proxy function') \
+                and self.name_pattern.match(self.next_token.symbol) is not None:
             token_class = self.symbol_table['(name)']
             self.next_token = token_class(self, self.next_token.symbol)
         else:
@@ -279,6 +305,8 @@ class XPath1Parser(Parser[XPathToken]):
         if not value:
             return False
         elif value == 'empty-sequence()' or value == 'none':
+            return True
+        elif value in ('map(*)', 'array(*)') and self.version >= '3.1':
             return True
         elif value[-1] in OCCURRENCE_INDICATORS:
             value = value[:-1]

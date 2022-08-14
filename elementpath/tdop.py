@@ -19,8 +19,6 @@ from typing import Any, cast, overload, no_type_check_decorator, Callable, \
     ClassVar, FrozenSet, Dict, Generic, List, Optional, Union, Tuple, Type, \
     Pattern, Match, MutableMapping, MutableSequence, Iterator, Set, TypeVar
 
-from .datatypes import AtomicValueType
-
 #
 # Simple top-down parser based on Vaughan Pratt's algorithm (Top Down Operator Precedence).
 #
@@ -142,7 +140,7 @@ class Token(MutableSequence[TK]):
     :cvar lbp: Pratt's left binding power, defaults to 0.
     :cvar rbp: Pratt's right binding power, defaults to 0.
     :cvar pattern: the regex pattern used for the token class. Defaults to the \
-    escaped symbol. Can be customized to match more detailed conditions (eg. a \
+    escaped symbol. Can be customized to match more detailed conditions (e.g. a \
     function with its left round bracket), in order to simplify the related code.
     :cvar label: defines the typology of the token class. Its value is used in \
     representations of the token instance and can be used to restrict code choices \
@@ -151,12 +149,13 @@ class Token(MutableSequence[TK]):
     the XPath parsers). In the base parser class defaults to 'symbol' with 'literal' \
     and 'operator' as possible alternatives. If set by a tuple of values the token \
     class label is transformed to a multi-value label, that means the token class can \
-    covers multiple roles (eg. as XPath function or axis). In those cases the definitive \
+    covers multiple roles (e.g. as XPath function or axis). In those cases the definitive \
     role is defined at parse time (nud and/or led methods) after the token instance creation.
     """
     lbp: int = 0           # left binding power
     rbp: int = 0           # right binding power
     symbol: str = ''       # the token identifier
+    lookup_name: str = ''  # the key in symbol table, usually matches the symbol.
     label: str = 'symbol'  # optional label
     pattern: Optional[str] = None  # a custom regex pattern for building the tokenizer
 
@@ -164,12 +163,12 @@ class Token(MutableSequence[TK]):
 
     _items: List[TK]
     parser: 'Parser[Token[TK]]'
-    value: Optional[AtomicValueType]
+    value: Optional[Any]
     _source: str
     span: Tuple[int, int]
 
     def __init__(self, parser: 'Parser[Token[TK]]',
-                 value: Optional[AtomicValueType] = None) -> None:
+                 value: Optional[Any] = None) -> None:
         self._items = []
         self.parser = parser
         self.value = value if value is not None else self.symbol
@@ -404,7 +403,7 @@ TK_co = TypeVar('TK_co', bound=Token[Any], covariant=True)
 
 class Parser(Generic[TK_co], metaclass=ParserMeta):
     """
-    Parser class for implementing a Top Down Operator Precedence parser.
+    Parser class for implementing a Top-Down Operator Precedence parser.
 
     :cvar SYMBOLS: the symbols of the definable tokens for the parser. In the base class it's an \
     immutable set that contains the symbols for special tokens (literals, names and end-token).\
@@ -422,7 +421,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
 
     _start_token: TK_co
     source: str
-    tokens: Iterator[str]
+    tokens: Iterator[Match[str]]
     token: TK_co
     next_token: TK_co
     next_match: Optional[Match[str]]
@@ -457,7 +456,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         assert self.tokenizer, "Parser tokenizer is not built!"
         try:
             try:
-                self.tokens = iter(cast(Iterator[str], self.tokenizer.finditer(source)))
+                self.tokens = iter(self.tokenizer.finditer(source))
             except TypeError as err:
                 token = self.symbol_table['(invalid)'](self, source)
                 raise token.wrong_syntax('invalid source type, {}'.format(err))
@@ -487,55 +486,54 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             raise self.next_token.wrong_syntax()
 
         self.token = self.next_token
-        while True:
-            try:
-                self.next_match = cast(Match[str], next(self.tokens))
-            except StopIteration:
-                self.next_token = self.symbol_table['(end)'](self)
+
+        for self.next_match in self.tokens:
+            assert self.next_match is not None
+            if not self.next_match.group().isspace():
                 break
+        else:
+            self.next_token = self.symbol_table['(end)'](self)
+            return self.next_token
+
+        literal, symbol, name, unknown = self.next_match.groups()
+        if symbol is not None:
+            try:
+                self.next_token = self.symbol_table[symbol](self)
+            except KeyError:
+                if self.name_pattern.match(symbol) is None:
+                    self.next_token = self.symbol_table['(unknown)'](self, symbol)
+                    raise self.next_token.wrong_syntax()
+                self.next_token = self.symbol_table['(name)'](self, symbol)
+        elif literal is not None:
+            if literal[0] in '\'"':
+                value = self.unescape(literal)
+                self.next_token = self.symbol_table['(string)'](self, value)
+            elif 'e' in literal or 'E' in literal:
+                try:
+                    value = float(literal)
+                except ValueError as err:
+                    self.next_token = self.symbol_table['(invalid)'](self, literal)
+                    raise self.next_token.wrong_syntax(message=str(err))
+                else:
+                    self.next_token = self.symbol_table['(float)'](self, value)
+            elif '.' in literal:
+                try:
+                    value = Decimal(literal)
+                except DecimalException as err:
+                    self.next_token = self.symbol_table['(invalid)'](self, literal)
+                    raise self.next_token.wrong_syntax(message=str(err))
+                else:
+                    self.next_token = self.symbol_table['(decimal)'](self, value)
             else:
-                literal, symbol, name, unknown = self.next_match.groups()
-                if symbol is not None:
-                    try:
-                        self.next_token = self.symbol_table[symbol](self)
-                    except KeyError:
-                        if self.name_pattern.match(symbol) is None:
-                            self.next_token = self.symbol_table['(unknown)'](self, symbol)
-                            raise self.next_token.wrong_syntax()
-                        self.next_token = self.symbol_table['(name)'](self, symbol)
-                    break
-                elif literal is not None:
-                    if literal[0] in '\'"':
-                        value = self.unescape(literal)
-                        self.next_token = self.symbol_table['(string)'](self, value)
-                    elif 'e' in literal or 'E' in literal:
-                        try:
-                            value = float(literal)
-                        except ValueError as err:
-                            self.next_token = self.symbol_table['(invalid)'](self, literal)
-                            raise self.next_token.wrong_syntax(message=str(err))
-                        else:
-                            self.next_token = self.symbol_table['(float)'](self, value)
-                    elif '.' in literal:
-                        try:
-                            value = Decimal(literal)
-                        except DecimalException as err:
-                            self.next_token = self.symbol_table['(invalid)'](self, literal)
-                            raise self.next_token.wrong_syntax(message=str(err))
-                        else:
-                            self.next_token = self.symbol_table['(decimal)'](self, value)
-                    else:
-                        self.next_token = self.symbol_table['(integer)'](self, int(literal))
-                    break
-                elif name is not None:
-                    self.next_token = self.symbol_table['(name)'](self, name)
-                    break
-                elif unknown is not None:
-                    self.next_token = self.symbol_table['(unknown)'](self, unknown)
-                    break
-                elif str(self.next_match.group()).strip():
-                    msg = "unexpected matching %r: incompatible tokenizer"
-                    raise RuntimeError(msg % self.next_match.group())
+                self.next_token = self.symbol_table['(integer)'](self, int(literal))
+        elif name is not None:
+            self.next_token = self.symbol_table['(name)'](self, name)
+        elif unknown is not None:
+            self.next_token = self.symbol_table['(unknown)'](self, unknown)
+        else:
+            msg = "unexpected matching %r: incompatible tokenizer"
+            raise RuntimeError(msg % self.next_match.group())
+
         return self.next_token
 
     def advance_until(self, *stop_symbols: str) -> str:
@@ -557,7 +555,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         source_chunk: List[str] = []
         while True:
             try:
-                self.next_match = cast(Match[str], next(self.tokens))
+                self.next_match = next(self.tokens)
             except StopIteration:
                 self.next_token = self.symbol_table['(end)'](self)
                 break
@@ -587,13 +585,11 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         :param rbp: right binding power for the expression.
         :return: left token.
         """
-        token = self.next_token
         self.advance()
-        left = token.nud()
+        left = self.token.nud()
         while rbp < self.next_token.lbp:
-            token = self.next_token
             self.advance()
-            left = token.led(left)
+            left = self.token.led(left)
         return cast(TK_co, left)
 
     @property
@@ -656,8 +652,9 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             if ' ' in symbol:
                 raise ValueError("%r: a symbol can't contain whitespaces" % symbol)
 
+            lookup_name = kwargs.get('lookup_name', symbol)
             try:
-                token_class = cls.symbol_table[symbol]
+                token_class = cls.symbol_table[lookup_name]
             except KeyError:
                 # Register a new symbol and create a new custom class. The new class
                 # name is registered at parser class's module level.
@@ -666,12 +663,14 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
                         raise NameError('%r is not a symbol of the parser %r.' % (symbol, cls))
 
                 kwargs['symbol'] = symbol
+                kwargs['lookup_name'] = lookup_name
                 label = kwargs.get('label', 'symbol')
                 if isinstance(label, tuple):
                     label = kwargs['label'] = MultiLabel(*label)
 
                 token_class_name = "_{}{}".format(
-                    _symbol_to_classname(symbol), str(label).title().replace(' ', '')
+                    _symbol_to_classname(symbol),
+                    str(label).title().replace(' ', '')
                 )
                 token_class_bases = kwargs.get('bases', (cls.token_base_class,))
                 kwargs.update({
@@ -682,7 +681,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
                 token_class = cast(
                     Type[TK_co], ABCMeta(token_class_name, token_class_bases, kwargs)
                 )
-                cls.symbol_table[symbol] = token_class
+                cls.symbol_table[lookup_name] = token_class
                 MutableSequence.register(token_class)
                 setattr(sys.modules[cls.__module__], token_class_name, token_class)
 
@@ -690,7 +689,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             raise TypeError("A string or a %r subclass requested, not %r." % (Token, symbol))
         else:
             token_class = symbol
-            if cls.symbol_table.get(symbol.symbol) is not token_class:
+            if cls.symbol_table.get(symbol.lookup_name) is not token_class:
                 raise ValueError("Token class %r is not registered." % token_class)
 
         for key, value in kwargs.items():
@@ -791,14 +790,15 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
     def build(cls) -> None:
         """
         Builds the parser class. Checks if all declared symbols are defined
-        and builds a the regex tokenizer using the symbol related patterns.
+        and builds the regex tokenizer using the symbol related patterns.
         """
         # For backward compatibility with external defined parsers
         if '(start)' not in cls.symbol_table:
             cls.register('(start)')
 
-        if not cls.SYMBOLS.issubset(cls.symbol_table.keys()):
-            unregistered = [s for s in cls.SYMBOLS if s not in cls.symbol_table]
+        symbols = {tk.symbol for tk in cls.symbol_table.values()}
+        if not cls.SYMBOLS.issubset(symbols):
+            unregistered = list(s for s in cls.SYMBOLS if s not in symbols)
             raise ValueError("The parser %r has unregistered symbols: %r" % (cls, unregistered))
         cls.tokenizer = cls.create_tokenizer(cls.symbol_table)
 

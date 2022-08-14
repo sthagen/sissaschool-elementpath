@@ -37,7 +37,6 @@ register('?', bases=(ValueToken,))
 
 @method('?')
 def nud_placeholder_symbol(self):
-    # self.value = self
     return self
 
 
@@ -69,7 +68,7 @@ def nud_parenthesized_expression(self):
 
 @method('(')
 def led_parenthesized_expression(self, left):
-    if left.symbol == '(name)':
+    if left.symbol in ('(name)', 'Q{'):
         if left.value in self.parser.RESERVED_FUNCTION_NAMES:
             msg = f"{left.value!r} is not allowed as function name"
             raise left.error('XPST0003', msg)
@@ -101,7 +100,18 @@ def evaluate_parenthesized_expression(self, context=None):
 
     if len(self) > 1:
         if isinstance(value, XPathFunction):
-            return value(context, self[1])
+            # Build argument list considering commas as separators of different arguments
+            arguments = []
+            tk = self[1]
+            while True:
+                if tk.symbol == ',':
+                    arguments.append(tk[1].evaluate(context))
+                    tk = tk[0]
+                else:
+                    arguments.append(tk.evaluate(context))
+                    break
+            arguments.reverse()
+            return value(context, *arguments)
         elif self[0].symbol == '(':
             if not isinstance(value, list):
                 return value
@@ -212,7 +222,10 @@ def evaluate_function_reference(self, context=None):
         raise self.error('XPST0017', f"unknown function {qname.qname}#{arity}")
 
     try:
-        token_class = self.parser.symbol_table[local_name]
+        if namespace in (XPATH_FUNCTIONS_NAMESPACE, XSD_NAMESPACE):
+            token_class = self.parser.symbol_table[local_name]
+        else:
+            token_class = self.parser.symbol_table[qname.expanded_name]
     except KeyError:
         msg = f"unknown function {qname.qname}#{arity}"
         raise self.error('XPST0017', msg) from None
@@ -231,5 +244,3 @@ def evaluate_function_reference(self, context=None):
         elif func.namespace != namespace:
             raise self.error('XPST0017', f"unknown function {qname.qname}#{arity}")
         return func
-
-# XPath 3.0 definitions continue into module xpath3_functions
