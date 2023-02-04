@@ -11,7 +11,6 @@
 import unittest
 from unittest.mock import patch
 import io
-import locale
 import math
 import xml.etree.ElementTree as ElementTree
 from collections import namedtuple
@@ -29,7 +28,6 @@ from elementpath.datatypes import UntypedAtomic
 from elementpath.namespaces import XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE
 from elementpath.xpath_nodes import ElementNode, AttributeNode, NamespaceNode, \
     CommentNode, ProcessingInstructionNode, TextNode, DocumentNode
-from elementpath.xpath_token import UNICODE_CODEPOINT_COLLATION
 from elementpath.helpers import ordinal
 from elementpath.xpath_context import XPathContext, XPathSchemaContext
 from elementpath.xpath1 import XPath1Parser
@@ -200,23 +198,6 @@ class XPath1TokenTest(unittest.TestCase):
             token = self.parser.parse('((), 1, 3, "a")')
             self.assertListEqual(list(token.atomization()), [1, 3, 'a'])
 
-    def test_use_locale_context_manager(self):
-        token = self.parser.parse('true()')
-        with token.use_locale(UNICODE_CODEPOINT_COLLATION):
-            self.assertEqual(locale.getlocale(locale.LC_COLLATE), ('en_US', 'UTF-8'))
-
-        try:
-            with token.use_locale('de_DE.UTF-8'):
-                self.assertEqual(locale.getlocale(locale.LC_COLLATE), ('de_DE', 'UTF-8'))
-        except locale.Error:
-            pass  # Skip test if 'de_DE.UTF-8' is an unknown locale setting
-
-        with self.assertRaises(TypeError) as cm:
-            with token.use_locale(None):
-                pass
-        self.assertIn('XPTY0004', str(cm.exception))
-        self.assertIn('collation cannot be an empty sequence', str(cm.exception))
-
     def test_boolean_value_function(self):
         token = self.parser.parse('true()')
         elem = ElementTree.Element('A')
@@ -272,7 +253,7 @@ class XPath1TokenTest(unittest.TestCase):
 
         obj = ElementTree.ProcessingInstruction('action', 'nothing to do')
         pi_node = ProcessingInstructionNode(obj)
-        self.assertEqual(token.data_value(pi_node), 'action nothing to do')
+        self.assertEqual(token.data_value(pi_node), 'nothing to do')
 
         self.assertIsNone(token.data_value(None))
         self.assertEqual(token.data_value(19), 19)
@@ -306,7 +287,7 @@ class XPath1TokenTest(unittest.TestCase):
         self.assertEqual(token.string_value(attribute_node), '0212349350')
         self.assertEqual(token.string_value(namespace_node), 'http://www.w3.org/2001/XMLSchema')
         self.assertEqual(token.string_value(comment_node), 'nothing important')
-        self.assertEqual(token.string_value(pi_node), 'action nothing to do')
+        self.assertEqual(token.string_value(pi_node), 'nothing to do')
         self.assertEqual(token.string_value(text_node), 'betelgeuse')
         self.assertEqual(token.string_value(None), '')
 
@@ -373,29 +354,20 @@ class XPath1TokenTest(unittest.TestCase):
             raise token.unexpected('.', code='XPST0017')
         self.assertIn('XPST0017', str(ctx.exception))
 
-    def test_xpath_error_code(self):
-        parser = XPath2Parser()
-        token = parser.parse('.')
-
-        self.assertEqual(token.error_code('XPST0003'), 'err:XPST0003')
-        parser.namespaces['error'] = parser.namespaces.pop('err')
-        self.assertEqual(token.error_code('XPST0003'), 'error:XPST0003')
-        parser.namespaces.pop('error')
-        self.assertEqual(token.error_code('XPST0003'), 'XPST0003')
-
     def test_xpath_error(self):
         token = self.parser.parse('.')
 
         with self.assertRaises(ValueError) as ctx:
             raise token.error('xml:XPST0003')
         self.assertIn('XPTY0004', str(ctx.exception))
-        self.assertIn("'http://www.w3.org/2005/xqt-errors' namespace is required",
+        self.assertIn("'xml:XPST0003' is not an XPath error code",
                       str(ctx.exception))
 
         with self.assertRaises(ValueError) as ctx:
             raise token.error('err:err:XPST0003')
         self.assertIn('XPTY0004', str(ctx.exception))
-        self.assertIn("is not a prefixed name", str(ctx.exception))
+        self.assertIn("'err:err:XPST0003' is not an XPath error code",
+                      str(ctx.exception))
 
         with self.assertRaises(ValueError) as ctx:
             raise token.error('XPST9999')
@@ -416,35 +388,6 @@ class XPath1TokenTest(unittest.TestCase):
         with self.assertRaises(MissingContextError) as ctx:
             raise token.missing_context()
         self.assertIn('XPDY0002', str(ctx.exception))
-
-        with self.assertRaises(TypeError) as ctx:
-            raise token.wrong_context_type()
-        self.assertIn('XPTY0004', str(ctx.exception))
-
-        with self.assertRaises(NameError) as ctx:
-            raise token.missing_name()
-        self.assertIn('XPST0008', str(ctx.exception))
-
-        if self.parser.compatibility_mode:
-            with self.assertRaises(NameError) as ctx:
-                raise token.missing_axis()
-            self.assertIn('XPST0010', str(ctx.exception))
-        else:
-            with self.assertRaises(SyntaxError) as ctx:
-                raise token.missing_axis()
-            self.assertIn('XPST0003', str(ctx.exception))
-
-        with self.assertRaises(TypeError) as ctx:
-            raise token.wrong_nargs()
-        self.assertIn('XPST0017', str(ctx.exception))
-
-        with self.assertRaises(TypeError) as ctx:
-            raise token.wrong_sequence_type()
-        self.assertIn('XPDY0050', str(ctx.exception))
-
-        with self.assertRaises(NameError) as ctx:
-            raise token.unknown_atomic_type()
-        self.assertIn('XPST0051', str(ctx.exception))
 
 
 class XPath2TokenTest(XPath1TokenTest):

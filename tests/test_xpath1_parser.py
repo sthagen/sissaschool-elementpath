@@ -43,8 +43,8 @@ from elementpath import datatypes, XPath1Parser, XPathContext, MissingContextErr
     AttributeNode, NamespaceNode, TextNode, CommentNode, ProcessingInstructionNode, \
     ElementNode, select, XPathFunction
 from elementpath.namespaces import XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, \
-    XPATH_MATH_FUNCTIONS_NAMESPACE, XSD_ANY_ATOMIC_TYPE, XSD_ANY_SIMPLE_TYPE, \
-    XSD_UNTYPED_ATOMIC
+    XPATH_MATH_FUNCTIONS_NAMESPACE
+from elementpath.sequence_types import is_sequence_type
 
 try:
     from tests import xpath_test_class
@@ -267,47 +267,6 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
             parser.xsd_qname('string')
         self.assertIn('XPST0081', str(ctx.exception))
 
-    def test_is_instance_method(self):
-        self.assertTrue(self.parser.is_instance(datatypes.UntypedAtomic(1),
-                                                XSD_UNTYPED_ATOMIC))
-        self.assertFalse(self.parser.is_instance(1, XSD_UNTYPED_ATOMIC))
-        self.assertTrue(self.parser.is_instance(1, XSD_ANY_ATOMIC_TYPE))
-        self.assertFalse(self.parser.is_instance([1], XSD_ANY_ATOMIC_TYPE))
-        self.assertTrue(self.parser.is_instance(1, XSD_ANY_SIMPLE_TYPE))
-        self.assertTrue(self.parser.is_instance([1], XSD_ANY_SIMPLE_TYPE))
-
-        self.assertTrue(self.parser.is_instance('foo', '{%s}string' % XSD_NAMESPACE))
-        self.assertFalse(self.parser.is_instance(1, '{%s}string' % XSD_NAMESPACE))
-        self.assertTrue(self.parser.is_instance(1.0, '{%s}double' % XSD_NAMESPACE))
-        self.assertFalse(self.parser.is_instance(1.0, '{%s}float' % XSD_NAMESPACE))
-
-        self.parser._xsd_version = '1.1'
-        try:
-            self.assertTrue(self.parser.is_instance(1.0, '{%s}double' % XSD_NAMESPACE))
-            self.assertFalse(self.parser.is_instance(1.0, '{%s}float' % XSD_NAMESPACE))
-        finally:
-            self.parser._xsd_version = '1.0'
-
-        with self.assertRaises(KeyError):
-            self.parser.is_instance('foo', '{%s}unknown' % XSD_NAMESPACE)
-
-        if xmlschema is not None and self.parser.version > '1.0':
-            schema = xmlschema.XMLSchema("""
-                <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
-                  <xs:simpleType name="myInt">
-                    <xs:restriction base="xs:int"/>
-                  </xs:simpleType>
-                </xs:schema>""")
-
-            self.parser.schema = xmlschema.xpath.XMLSchemaProxy(schema)
-            try:
-                self.assertFalse(self.parser.is_instance(1.0, 'myInt'))
-                self.assertTrue(self.parser.is_instance(1, 'myInt'))
-                with self.assertRaises(KeyError):
-                    self.parser.is_instance(1.0, 'dType')
-            finally:
-                self.parser.schema = None
-
     def test_check_variables_method(self):
         self.assertIsNone(self.parser.check_variables({
             'values': [1, 2, -1],
@@ -359,7 +318,7 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         context = XPathContext(root)
         self.check_value("tst:B1", [context.root[1]], context=context)
         self.check_value("tst:B2", [context.root[3], context.root[7]], context=context)
-        self.check_value("tst:B1:B2", NameError)
+        self.check_value("tst:B1:B2", SyntaxError)
 
         self.check_selector("./tst:B1", root, [root[0]], namespaces=namespaces)
         self.check_selector("./tst:*", root, root[:], namespaces=namespaces)
@@ -1033,7 +992,7 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
 
         if self.parser.version != '1.0':
             self.check_tree('(5, 6) instance of xs:integer+',
-                            '(instance (, (5) (6)) (: (xs) (integer)) (+))')
+                            '(instance (, (5) (6)) (: (xs) (integer)))')
             self.check_tree('- 1 instance of xs:int', "(instance (- (1)) (: (xs) (int)))")
             self.check_tree('+ 1 instance of xs:int', "(instance (+ (1)) (: (xs) (int)))")
             self.wrong_type('2 - 1 instance of xs:int', 'XPTY0004')
@@ -1612,18 +1571,18 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
                 function_names.append(tk.symbol)
                 for st in tk.sequence_types:
                     if 'dateTimeStamp' in st:
-                        self.assertFalse(self.parser.is_sequence_type(st), msg=st)
+                        self.assertFalse(is_sequence_type(st, self.parser), msg=st)
                         with self.xsd_version_parser('1.1'):
-                            self.assertTrue(self.parser.is_sequence_type(st), msg=st)
+                            self.assertTrue(is_sequence_type(st, self.parser), msg=st)
                     else:
-                        self.assertTrue(self.parser.is_sequence_type(st), msg=st)
+                        self.assertTrue(is_sequence_type(st, self.parser), msg=st)
 
         if self.parser.version == '1.0':
             self.assertEqual(len(self.parser.function_signatures), 36)
         elif self.parser.version == '2.0':
-            self.assertEqual(len(self.parser.function_signatures), 150)
+            self.assertEqual(len(self.parser.function_signatures), 151)
         elif self.parser.version == '3.0':
-            self.assertEqual(len(self.parser.function_signatures), 220)
+            self.assertEqual(len(self.parser.function_signatures), 221)
 
         for key, value in self.parser.function_signatures.items():
             self.assertIsInstance(key, tuple)
@@ -1644,7 +1603,7 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
 
             self.assertIsInstance(value, str)
             self.assertTrue(value.startswith('function('))
-            self.assertTrue(self.parser.is_sequence_type(value))
+            self.assertTrue(is_sequence_type(value, self.parser), msg=value)
 
     def test_descendant_predicate__issue_51(self):
         root = self.etree.XML(dedent("""<doc>

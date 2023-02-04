@@ -16,16 +16,17 @@ import operator
 from copy import copy
 from decimal import Decimal, DivisionByZero
 
-from ..exceptions import ElementPathError, ElementPathTypeError
+from ..exceptions import ElementPathError
 from ..helpers import OCCURRENCE_INDICATORS, numeric_equal, numeric_not_equal, \
-    node_position
+    node_position, get_double
 from ..namespaces import XSD_NAMESPACE, XSD_NOTATION, XSD_ANY_ATOMIC_TYPE, \
-    get_namespace, get_expanded_name
+    XSD_UNTYPED, get_namespace, get_expanded_name
 from ..datatypes import get_atomic_value, UntypedAtomic, QName, AnyURI, \
     Duration, Integer, DoubleProxy10
 from ..xpath_nodes import ElementNode, DocumentNode, XPathNode, AttributeNode
+from ..sequence_types import is_instance
 from ..xpath_context import XPathSchemaContext
-from ..xpath_token import XPathFunction
+from ..xpath_tokens import XPathFunction
 
 from .xpath2_parser import XPath2Parser
 
@@ -47,7 +48,7 @@ def nud_as_and_of_symbols(self):
 # Variables
 @method('$', bp=90)
 def nud_variable_reference(self):
-    self.parser.expected_name('(name)', 'Q{')
+    self.parser.expected_next('(name)', 'Q{')
     self[:] = self.parser.expression(rbp=90),
     return self
 
@@ -64,30 +65,34 @@ def evaluate_variable_reference(self, context=None):
 
     varname = self[0].value
     try:
-        return context.variables[varname]
+        value = context.variables[varname]
     except KeyError:
-        if isinstance(context, XPathSchemaContext):
-            try:
-                sequence_type = self.parser.variable_types[varname].strip()
-            except KeyError:
-                pass
-            else:
-                if sequence_type[-1] in OCCURRENCE_INDICATORS:
-                    sequence_type = sequence_type[:-1]
+        pass
+    else:
+        return value if value is not None else []
 
-                if QName.pattern.match(sequence_type) is not None:
-                    try:
-                        type_name = get_expanded_name(sequence_type, self.parser.namespaces)
-                    except KeyError:
-                        pass
-                    else:
-                        xsd_type = context.root.elem.xpath_proxy.get_type(type_name)
-                        if xsd_type is not None:
-                            return get_atomic_value(xsd_type)
+    if isinstance(context, XPathSchemaContext):
+        try:
+            sequence_type = self.parser.variable_types[varname].strip()
+        except KeyError:
+            return []
+        else:
+            if sequence_type[-1] in OCCURRENCE_INDICATORS:
+                sequence_type = sequence_type[:-1]
 
-                return UntypedAtomic('1')
+            if QName.pattern.match(sequence_type) is not None:
+                try:
+                    type_name = get_expanded_name(sequence_type, self.parser.namespaces)
+                except KeyError:
+                    pass
+                else:
+                    xsd_type = context.root.elem.xpath_proxy.get_type(type_name)
+                    if xsd_type is not None:
+                        return get_atomic_value(xsd_type)
 
-    raise self.missing_name('unknown variable %r' % str(varname))
+            return UntypedAtomic('1')
+
+    raise self.error('XPST0008', 'unknown variable %r' % str(varname))
 
 
 ###
@@ -117,8 +122,7 @@ def select_intersect_and_except_operators(self, context=None):
 @method('if', bp=20)
 def nud_if_expression(self):
     if self.parser.next_token.symbol != '(':
-        token = self.parser.symbol_table['(name)'](self.parser, self.symbol)
-        return token.nud()
+        return self.as_name()
 
     self.parser.advance('(')
     self[:] = self.parser.expression(5),
@@ -153,8 +157,7 @@ def select_if_expression(self, context=None):
 def nud_quantified_expressions(self):
     del self[:]
     if self.parser.next_token.symbol != '$':
-        token = self.parser.symbol_table['(name)'](self.parser, self.symbol)
-        return token.nud()
+        return self.as_name()
 
     while True:
         self.parser.next_token.expected('$')
@@ -204,8 +207,7 @@ def evaluate_quantified_expressions(self, context=None):
 def nud_for_expression(self):
     del self[:]
     if self.parser.next_token.symbol != '$':
-        token = self.parser.symbol_table['(name)'](self.parser, self.symbol)
-        return token.nud()
+        return self.as_name()
 
     while True:
         self.parser.next_token.expected('$')
@@ -247,28 +249,13 @@ def select_for_expression(self, context=None):
 @method('treat', bp=61)
 def led_sequence_type_based_expressions(self, left):
     self.parser.advance('of' if self.symbol == 'instance' else 'as')
-    if self.parser.next_token.label not in ('kind test', 'sequence type', 'function test'):
-        self.parser.expected_name('(name)', ':')
-
-    try:
-        self[:] = left, self.parser.expression(rbp=self.rbp)
-    except ElementPathTypeError as err:
-        message = getattr(err, 'message', str(err))
-        raise self.error('XPST0003', message) from None
-
-    next_symbol = self.parser.next_token.symbol
-    if self[1].symbol != 'empty-sequence' and next_symbol in ('?', '*', '+'):
-        self[2:] = self.parser.symbol_table[next_symbol](self.parser),  # Add nullary token
-        self.parser.advance()
+    self[:] = left, self.parse_sequence_type()
     return self
 
 
 @method('instance')
 def evaluate_instance_expression(self, context=None):
-    if len(self) > 2:
-        occurs = self[2].symbol
-    else:
-        occurs = self[1].occurrence
+    occurs = self[1].occurrence
     position = None
 
     if self[1].symbol == 'empty-sequence':
@@ -279,27 +266,33 @@ def evaluate_instance_expression(self, context=None):
         if context is None:
             raise self.missing_context()
 
+        context = copy(context)
+
         for position, context.item in enumerate(self[0].select(context)):
+            if context.axis is None:
+                context.axis = 'self'
+
             result = self[1].evaluate(context)
-            if result is None or isinstance(result, list) and not result:
+            if isinstance(result, list) and not result:
                 return occurs in ('*', '?')
             elif position and (occurs is None or occurs == '?'):
                 return False
         else:
             return position is not None or occurs in ('*', '?')
     else:
+        type_name = self[1].source.rstrip('*+?')
         try:
-            qname = get_expanded_name(self[1].source, self.parser.namespaces)
+            qname = get_expanded_name(type_name, self.parser.namespaces)
         except KeyError as err:
             raise self.error('XPST0081', "namespace prefix {} not found".format(err))
 
         for position, item in enumerate(self[0].select(context)):
             try:
-                if not self.parser.is_instance(item, qname):
+                if not is_instance(item, qname, self.parser):
                     return False
             except KeyError:
-                msg = "atomic type %r not found in in-scope schema types"
-                raise self.error('XPST0051', msg % self[1].source) from None
+                msg = f"atomic type {type_name!r} not found in in-scope schema types"
+                raise self.error('XPST0051', msg) from None
             else:
                 if position and (occurs is None or occurs == '?'):
                     return False
@@ -309,30 +302,27 @@ def evaluate_instance_expression(self, context=None):
 
 @method('treat')
 def evaluate_treat_expression(self, context=None):
-    if len(self) > 2:
-        occurs = self[2].symbol
-    else:
-        occurs = self[1].occurrence
-
+    occurs = self[1].occurrence
     position = None
     castable_expr = []
     if self[1].symbol == 'empty-sequence':
         for _ in self[0].select(context):
-            raise self.wrong_sequence_type()
+            raise self.error('XPDY0050')
     elif self[1].label in ('kind test', 'sequence type', 'function test'):
         for position, item in enumerate(self[0].select(context)):
             result = self[1].evaluate(context)
             if isinstance(result, list) and not result:
-                raise self.wrong_sequence_type()
+                raise self.error('XPDY0050')
             elif position and (occurs is None or occurs == '?'):
-                raise self.wrong_sequence_type("more than one item in sequence")
+                raise self.error('XPDY0050', "more than one item in sequence")
             castable_expr.append(item)
         else:
             if position is None and occurs not in ('*', '?'):
-                raise self.wrong_sequence_type("the sequence cannot be empty")
+                raise self.error('XPDY0050', "the sequence cannot be empty")
     else:
+        type_name = self[1].source.rstrip('*+?')
         try:
-            qname = get_expanded_name(self[1].source, self.parser.namespaces)
+            qname = get_expanded_name(type_name, self.parser.namespaces)
         except KeyError as err:
             raise self.error('XPST0081', 'prefix {} not found'.format(str(err)))
 
@@ -341,19 +331,19 @@ def evaluate_treat_expression(self, context=None):
 
         for position, item in enumerate(self[0].select(context)):
             try:
-                if not self.parser.is_instance(item, qname):
-                    msg = f"item {item!r} is not of type {self[1].source!r}"
+                if not is_instance(item, qname, self.parser):
+                    msg = f"item {item!r} is not of type {type_name!r}"
                     raise self.error('XPDY0050', msg)
             except KeyError:
-                msg = "atomic type %r not found in in-scope schema types"
-                raise self.error('XPST0051', msg % self[1].source) from None
+                msg = f"atomic type {type_name!r} not found in in-scope schema types"
+                raise self.error('XPST0051', msg) from None
             else:
                 if position and (occurs is None or occurs == '?'):
-                    raise self.wrong_sequence_type("more than one item in sequence")
+                    raise self.error('XPDY0050', "more than one item in sequence")
                 castable_expr.append(item)
         else:
             if position is None and occurs not in ('*', '?'):
-                raise self.wrong_sequence_type("the sequence cannot be empty")
+                raise self.error('XPDY0050', "the sequence cannot be empty")
 
     return castable_expr
 
@@ -364,10 +354,10 @@ def evaluate_treat_expression(self, context=None):
 @method('cast', bp=63)
 def led_cast_expressions(self, left):
     self.parser.advance('as')
-    self.parser.expected_name('(name)', ':')
-    self[:] = left, self.parser.expression(rbp=self.rbp)
+    self.parser.expected_next('(name)', ':', 'Q{', message='an EQName expected')
+    self[:] = left, self.parser.expression(rbp=85)
     if self.parser.next_token.symbol == '?':
-        self[2:] = self.parser.symbol_table['?'](self.parser),  # Add nullary token
+        self[1].occurrence = '?'
         self.parser.advance()
     return self
 
@@ -375,8 +365,9 @@ def led_cast_expressions(self, left):
 @method('castable')
 @method('cast')
 def evaluate_cast_expressions(self, context=None):
+    type_name = self[1].source.rstrip('+*?')
     try:
-        atomic_type = get_expanded_name(self[1].source, namespaces=self.parser.namespaces)
+        atomic_type = get_expanded_name(type_name, namespaces=self.parser.namespaces)
     except KeyError as err:
         raise self.error('XPST0081', 'prefix {} not found'.format(str(err)))
 
@@ -387,20 +378,20 @@ def evaluate_cast_expressions(self, context=None):
     if namespace != XSD_NAMESPACE and \
             (self.parser.schema is None or self.parser.schema.get_type(atomic_type) is None):
         msg = "atomic type %r not found in the in-scope schema types"
-        raise self.unknown_atomic_type(msg % atomic_type)
+        raise self.error('XPST0051', msg % atomic_type)
 
     result = [res for res in self[0].select(context)]
     if len(result) > 1:
         if self.symbol != 'cast':
             return False
-        raise self.wrong_context_type("more than one value in expression")
+        raise self.error('XPTY0004', "more than one value in expression")
     elif not result:
-        if len(self) == 3:
+        if self[1].occurrence == '?':
             return [] if self.symbol == 'cast' else True
         elif self.symbol != 'cast':
             return False
         else:
-            raise self.wrong_context_type("an atomic value is required")
+            raise self.error('XPTY0004', "an atomic value is required")
 
     arg = self.data_value(result[0])
     try:
@@ -410,8 +401,8 @@ def evaluate_cast_expressions(self, context=None):
             local_name = atomic_type.split('}')[1]
             token_class = self.parser.symbol_table.get(local_name)
             if token_class is None or token_class.label != 'constructor function':
-                msg = "atomic type %r not found in the in-scope schema types"
-                raise self.unknown_atomic_type(msg % self[1].source)
+                msg = f"atomic type {type_name!r} not found in the in-scope schema types"
+                raise self.error('XPST0051', msg)
             elif local_name == 'QName':
                 if isinstance(arg, QName):
                     pass
@@ -527,7 +518,7 @@ def evaluate_value_comparison_operators(self, context=None):
                 self[1].get_atomized_operand(context=copy(context))]
 
     if any(x is None for x in operands):
-        return None
+        return []
     elif any(isinstance(x, XPathFunction) for x in operands):
         raise self.error('FOTY0013', "cannot compare a function item")
     elif all(isinstance(x, DoubleProxy10) for x in operands):
@@ -555,9 +546,9 @@ def evaluate_value_comparison_operators(self, context=None):
         pass
     elif all(isinstance(x, (float, Decimal, int)) for x in operands):
         if isinstance(operands[0], float):
-            operands[1] = float(operands[1])
+            operands[1] = get_double(operands[1], self.parser.xsd_version)
         else:
-            operands[0] = float(operands[0])
+            operands[0] = get_double(operands[0], self.parser.xsd_version)
     elif all(isinstance(x, Duration) for x in operands) and self.symbol in ('eq', 'ne'):
         pass
     elif (issubclass(cls0, cls1) or issubclass(cls1, cls0)) and not issubclass(cls0, Duration):
@@ -590,13 +581,13 @@ def evaluate_node_comparison(self, context=None):
 
     left = [x for x in self[0].select(context)]
     if not left:
-        return None
+        return []
     elif len(left) > 1 or not isinstance(left[0], XPathNode):
         raise self[0].error('XPTY0004', "left operand of %r must be a single node" % symbol)
 
     right = [x for x in self[1].select(context)]
     if not right:
-        return None
+        return []
     elif len(right) > 1 or not isinstance(right[0], XPathNode):
         raise self[0].error('XPTY0004', "right operand of %r must be a single node" % symbol)
 
@@ -689,8 +680,7 @@ def evaluate_idiv_operator(self, context=None):
 @method('castable')
 @method('cast')
 def nud_disambiguation_of_infix_operators(self):
-    token = self.parser.symbol_table['(name)'](self.parser, self.symbol)
-    return token.nud()
+    return self.as_name()
 
 
 ###
@@ -708,7 +698,8 @@ def select_document_node_kind_test(self, context=None):
                     yield context.root
     else:
         elements = [e for e in self[0].select(copy(context)) if isinstance(e, ElementNode)]
-        if isinstance(context.root, DocumentNode) and context.item is None:
+        if isinstance(context.root, DocumentNode) and context.item is None \
+                or isinstance(context.item, DocumentNode):
             if len(elements) == 1:
                 yield context.root
 
@@ -719,7 +710,8 @@ def nud_document_node_kind_test(self):
     if self.parser.next_token.symbol in ('element', 'schema-element'):
         self[0:] = self.parser.expression(5),
         if self.parser.next_token.symbol == ',':
-            raise self.wrong_nargs('Too many arguments: expected at most 1 argument')
+            msg = 'Too many arguments: expected at most 1 argument'
+            raise self.error('XPST0017', msg)
     elif self.parser.next_token.symbol != ')':
         raise self.error('XPST0003', 'element or schema-element kind test expected')
     self.parser.advance(')')
@@ -748,7 +740,12 @@ def select_element_kind_test(self, context=None):
                 if item.nilled:
                     if type_annotation[-1] in '*?':
                         yield item
-                elif item.xsd_type is not None and type_annotation == item.xsd_type.name:
+                elif item.xsd_type is None:
+                    if type_annotation == XSD_UNTYPED and self[0].symbol != '*':
+                        yield item
+                elif type_annotation == item.xsd_type.name:
+                    yield item
+                elif is_instance(item.typed_value, type_annotation, self.parser):
                     yield item
 
 
@@ -756,12 +753,12 @@ def select_element_kind_test(self, context=None):
 def nud_element_kind_test(self):
     self.parser.advance('(')
     if self.parser.next_token.symbol != ')':
-        self.parser.expected_name('(name)', ':', '*', message='a QName or a wildcard expected')
+        self.parser.expected_next('(name)', ':', '*', message='a QName or a wildcard expected')
         self[0:] = self.parser.expression(5),
         if self.parser.next_token.symbol == ',':
             self.parser.advance(',')
-            self.parser.expected_name('(name)', ':', message='a QName expected')
-            self[1:] = self.parser.expression(5),
+            self.parser.expected_next('(name)', ':', message='a QName expected')
+            self[1:] = self.parser.expression(80),
             if self.parser.next_token.symbol in ('*', '+', '?'):
                 self[1].occurrence = self.parser.next_token.symbol
                 self.parser.advance()
@@ -780,7 +777,7 @@ def select_schema_attribute_kind_test(self, context=None):
     for _ in context.iter_children_or_self():
         qname = get_expanded_name(attribute_name, self.parser.namespaces)
         if self.parser.schema.get_attribute(qname) is None:
-            raise self.missing_name("attribute %r not found in schema" % attribute_name)
+            raise self.error('XPST0008', "attribute %r not found in schema" % attribute_name)
 
         if isinstance(context.item, AttributeNode) and context.item.match_name(qname):
             yield context.item
@@ -796,15 +793,17 @@ def select_schema_element_kind_test(self, context=None):
         raise self.missing_context()
 
     element_name = self[0].source
-    for _ in context.iter_children_or_self():
-        qname = get_expanded_name(element_name, self.parser.namespaces)
-        if self.parser.schema.get_element(qname) is None \
-                and self.parser.schema.get_substitution_group(qname) is None:
-            raise self.missing_name("element %r not found in schema" % element_name)
 
-        if isinstance(context.item, ElementNode) and context.item.elem.tag == qname:
-            yield context.item
-            return
+    if self.parser.schema is not None:
+        for _ in context.iter_children_or_self():
+            qname = get_expanded_name(element_name, self.parser.namespaces)
+            if self.parser.schema.get_element(qname) is None \
+                    and self.parser.schema.get_substitution_group(qname) is None:
+                raise self.error('XPST0008', "element %r not found in schema" % element_name)
+
+            if isinstance(context.item, ElementNode) and context.item.elem.tag == qname:
+                yield context.item
+                return
 
     if not isinstance(context, XPathSchemaContext):
         raise self.error('XPST0008', 'schema element %r not found' % element_name)
@@ -814,7 +813,7 @@ def select_schema_element_kind_test(self, context=None):
 @method('schema-element')
 def nud_schema_node_kind_test(self):
     self.parser.advance('(')
-    self.parser.expected_name('(name)', ':', message='a QName expected')
+    self.parser.expected_next('(name)', ':', 'Q{', message='a QName expected')
     self[0:] = self.parser.expression(5),
     self.parser.advance(')')
     self.value = None
@@ -841,7 +840,7 @@ def nud_attribute_kind_test_or_axis(self):
     if self.parser.next_token.symbol == '::':
         self.label = 'axis'
         self.parser.advance('::')
-        self.parser.expected_name(
+        self.parser.expected_next(
             '(name)', '*', 'text', 'node', 'document-node', 'comment', 'processing-instruction',
             'attribute', 'schema-attribute', 'element', 'schema-element', 'namespace-node'
         )
@@ -888,12 +887,21 @@ def select_attribute_kind_test_or_axis(self, context=None):
             if attribute.match_name(name):
                 if isinstance(context, XPathSchemaContext):
                     self.add_xsd_type(attribute)
-                elif not type_name:
-                    yield attribute.value
+                    continue
+
+                if attribute.xsd_type is None:
+                    attribute.xsd_type = self.get_xsd_type(attribute)
+
+                if not type_name:
+                    yield attribute.typed_value
                 else:
-                    xsd_type = self.get_xsd_type(attribute)
-                    if xsd_type is not None and xsd_type.name == type_name:
-                        yield attribute.value
+                    if attribute.xsd_type is None:
+                        if type_name == XSD_UNTYPED and name != '*':
+                            yield attribute.value
+                    elif attribute.xsd_type.name == type_name:
+                        yield attribute.typed_value
+                    elif is_instance(attribute.typed_value, type_name, self.parser):
+                        yield attribute.typed_value
 
 
 # XPath 2.0 definitions continue into module xpath2_functions

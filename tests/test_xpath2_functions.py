@@ -48,7 +48,7 @@ from elementpath import XPath2Parser, XPathContext, ElementPathError, \
 from elementpath.namespaces import XSI_NAMESPACE, XML_NAMESPACE, XML_ID
 from elementpath.datatypes import DateTime10, DateTime, Date10, Date, Time, \
     Timezone, DayTimeDuration, YearMonthDuration, QName, UntypedAtomic
-from elementpath.xpath_token import UNICODE_CODEPOINT_COLLATION
+from elementpath.collations import UNICODE_CODEPOINT_COLLATION
 
 try:
     from tests import test_xpath1_parser
@@ -287,11 +287,12 @@ class XPath2FunctionsTest(xpath_test_class.XPathTestCase):
 
             locale.setlocale(locale.LC_COLLATE, 'en_US.UTF-8')
             self.check_value("fn:compare('Strasse', 'Straße')", -1)
-            self.check_value("fn:compare('Strassen', 'Straße')", 1)
+            self.check_value("fn:compare('Strassen', 'Straße')", -1)
 
             try:
+                self.check_value("fn:compare('Strasse', 'Straße', "
+                                 "'http://www.w3.org/2013/collation/UCA?lang=it_IT.UTF-8')", -1)
                 self.check_value("fn:compare('Strasse', 'Straße', 'it_IT.UTF-8')", -1)
-                self.check_value("fn:compare('Strassen', 'Straße')", 1)
             except locale.Error:
                 pass  # Skip test if 'it_IT.UTF-8' is an unknown locale setting
 
@@ -1373,6 +1374,14 @@ class XPath2FunctionsTest(xpath_test_class.XPathTestCase):
                              'b': [NamespaceNode('tns1', 'http://xpath.test/ns')]}
         self.check_value('deep-equal($a, $a)', True, context=context)
         self.check_value('deep-equal($a, $b)', False, context=context)
+
+    def test_deep_equal_function_on_nested_sequences(self):
+        self.check_value('fn:deep-equal(1, 1)', True)
+        self.check_value('fn:deep-equal(1, (1))', True)
+        self.check_value('fn:deep-equal(1, (1, ()))', True)
+        self.check_value('fn:deep-equal(1, (1, (1)))', False)
+        self.check_value('fn:deep-equal((1, ()), (1, (1)))', False)
+        self.check_value('fn:deep-equal(((1), 1), (1, (1)))', True)
 
     def test_adjust_datetime_to_timezone_function(self):
         context = XPathContext(root=self.etree.XML('<A/>'), timezone=Timezone.fromstring('-05:00'),

@@ -16,8 +16,8 @@ from abc import ABCMeta
 from unicodedata import name as unicode_name
 from decimal import Decimal, DecimalException
 from typing import Any, cast, overload, no_type_check_decorator, Callable, \
-    ClassVar, FrozenSet, Dict, Generic, List, Optional, Union, Tuple, Type, \
-    Pattern, Match, MutableMapping, MutableSequence, Iterator, Set, TypeVar
+    Dict, Generic, List, Optional, Union, Tuple, Type, Pattern, Match, \
+    MutableMapping, MutableSequence, Iterator, TypeVar
 
 #
 # Simple top-down parser based on Vaughan Pratt's algorithm (Top Down Operator Precedence).
@@ -159,12 +159,11 @@ class Token(MutableSequence[TK]):
     label: str = 'symbol'  # optional label
     pattern: Optional[str] = None  # a custom regex pattern for building the tokenizer
 
-    __slots__ = '_items', 'parser', 'value', '_source', 'span'
+    __slots__ = '_items', 'parser', 'value', 'span'
 
     _items: List[TK]
     parser: 'Parser[Token[TK]]'
     value: Optional[Any]
-    _source: str
     span: Tuple[int, int]
 
     def __init__(self, parser: 'Parser[Token[TK]]',
@@ -172,7 +171,6 @@ class Token(MutableSequence[TK]):
         self._items = []
         self.parser = parser
         self.value = value if value is not None else self.symbol
-        self._source = parser.source
         self.span = (0, 0) if parser.next_match is None else parser.next_match.span()
 
     @overload
@@ -264,10 +262,55 @@ class Token(MutableSequence[TK]):
     def position(self) -> Tuple[int, int]:
         """A tuple with the position of the token in terms of line and column."""
         token_index = self.span[0]
-        line = self._source[:token_index].count('\n') + 1
+        line = self.parser.source[:token_index].count('\n') + 1
         if line == 1:
             return 1, token_index + 1
-        return line, token_index - self._source[:token_index].rindex('\n')
+        return line, token_index - self.parser.source[:token_index].rindex('\n')
+
+    def as_name(self) -> 'Token[TK]':
+        """Returns a new '(name)' token for resolving ambiguous states."""
+        assert self.parser.name_pattern.match(self.symbol) is not None, \
+            "Token symbol is not compatible with the name pattern!"
+
+        token = self.parser.symbol_table['(name)'](self.parser, self.symbol)
+        token.span = self.span
+        return token
+
+    def is_source_start(self) -> bool:
+        """
+        Returns `True` if the token is positioned at the start
+        of the source, ignoring the spaces.
+        """
+        return not bool(self.parser.source[0:self.span[0]].strip())
+
+    def is_line_start(self) -> bool:
+        """
+        Returns `True` if the token is positioned at the start
+        of a source line, ignoring the spaces.
+        """
+        token_index = self.span[0]
+        try:
+            line_start = self.parser.source[:token_index].rindex('\n') + 1
+        except ValueError:
+            return not bool(self.parser.source[:token_index].strip())
+        else:
+            return not bool(self.parser.source[line_start:token_index].strip())
+
+    def is_spaced(self, before: bool = True, after: bool = True) -> bool:
+        """
+        Returns `True` if the token has extra spaces (whitespace, tab or newline)
+        immediately before or after it.
+
+        :param before: if `True` considers also the extra spaces before the token.
+        :param after: if `True` considers also the extra spaces after the token.
+        """
+        start, end = self.span
+        try:
+            if before and start > 0 and self.parser.source[start - 1] in ' \t\n':
+                return True
+            return after and self.parser.source[end] in ' \t\n'
+        except IndexError:
+            return False
 
     def nud(self) -> TK:
         """Pratt's null denotation method"""
@@ -360,7 +403,6 @@ class ParserMeta(ABCMeta):
     literals_pattern: Pattern[str]
     name_pattern: Pattern[str]
     tokenizer: Optional[Pattern[str]]
-    SYMBOLS: Set[str]
     symbol_table: Dict[str, Token[Any]]
 
     def __new__(mcs, name: str, bases: Tuple[Type[Any], ...], namespace: Dict[str, Any]) \
@@ -383,12 +425,6 @@ class ParserMeta(ABCMeta):
             cls.name_pattern = re.compile(r'[A-Za-z0-9_]+')
         if 'tokenizer' not in namespace:
             cls.tokenizer = None
-        if 'SYMBOLS' not in namespace:
-            cls.SYMBOLS = set()
-            for base_class in bases:
-                if hasattr(base_class, 'SYMBOLS'):
-                    cls.SYMBOLS.update(base_class.SYMBOLS)
-                    break
         if 'symbol_table' not in namespace:
             cls.symbol_table = {}
             for base_class in bases:
@@ -405,16 +441,12 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
     """
     Parser class for implementing a Top-Down Operator Precedence parser.
 
-    :cvar SYMBOLS: the symbols of the definable tokens for the parser. In the base class it's an \
-    immutable set that contains the symbols for special tokens (literals, names and end-token).\
-    Has to be extended in a concrete parser adding all the symbols of the language.
     :cvar symbol_table: a dictionary that stores the token classes defined for the language.
     :type symbol_table: dict
     :cvar token_base_class: the base class for creating language's token classes.
     :type token_base_class: Token
     :cvar tokenizer: the language tokenizer compiled regexp.
     """
-    SYMBOLS: ClassVar[FrozenSet[str]] = SPECIAL_SYMBOLS
     token_base_class = Token
     tokenizer: Optional[Pattern[str]] = None
     symbol_table: MutableMapping[str, Type[TK_co]] = {}
@@ -442,7 +474,6 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Parser) and \
             self.token_base_class is other.token_base_class and \
-            self.SYMBOLS == other.SYMBOLS and \
             self.symbol_table == other.symbol_table
 
     def parse(self, source: str) -> TK_co:
@@ -471,19 +502,21 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             self.next_match = None
             self.token = self.next_token = self._start_token
 
-    def advance(self, *symbols: str) -> TK_co:
+    def advance(self, *symbols: str, message: Optional[str] = None) -> TK_co:
         """
         The Pratt's function for advancing to next token.
 
         :param symbols: Optional arguments tuple. If not empty one of the provided \
         symbols is expected. If the next token's symbol differs the parser raises a \
         parse error.
-        :return: The next token instance.
+        :param message: Optional custom message for unexpected symbols.
+        :return: The current token instance.
         """
         value: Any
-        if self.next_token.symbol == '(end)' or \
-                symbols and self.next_token.symbol not in symbols:
+        if self.next_token.symbol == '(end)':
             raise self.next_token.wrong_syntax()
+        elif symbols and self.next_token.symbol not in symbols:
+            raise self.next_token.wrong_syntax(message)
 
         self.token = self.next_token
 
@@ -493,7 +526,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
                 break
         else:
             self.next_token = self.symbol_table['(end)'](self)
-            return self.next_token
+            return self.token
 
         literal, symbol, name, unknown = self.next_match.groups()
         if symbol is not None:
@@ -534,7 +567,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             msg = "unexpected matching %r: incompatible tokenizer"
             raise RuntimeError(msg % self.next_match.group())
 
-        return self.next_token
+        return self.token
 
     def advance_until(self, *stop_symbols: str) -> str:
         """
@@ -602,20 +635,14 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         Returns `True` if the parser is positioned at the start
         of the source, ignoring the spaces.
         """
-        return not bool(self.source[0:self.token.span[0]].strip())
+        return self.token.is_source_start()
 
     def is_line_start(self) -> bool:
         """
         Returns `True` if the parser is positioned at the start
         of a source line, ignoring the spaces.
         """
-        token_index = self.token.span[0]
-        try:
-            line_start = self.source[:token_index].rindex('\n') + 1
-        except ValueError:
-            return not bool(self.source[:token_index].strip())
-        else:
-            return not bool(self.source[line_start:token_index].strip())
+        return self.token.is_line_start()
 
     def is_spaced(self, before: bool = True, after: bool = True) -> bool:
         """
@@ -627,13 +654,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         :param after: if `True` considers also the extra spaces after \
         the current token symbol.
         """
-        start, end = self.token.span
-        try:
-            if before and start > 0 and self.source[start - 1] in ' \t\n':
-                return True
-            return after and self.source[end] in ' \t\n'
-        except IndexError:
-            return False
+        return self.token.is_spaced(before, after)
 
     @staticmethod
     def unescape(string_literal: str) -> str:
@@ -656,11 +677,8 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             try:
                 token_class = cls.symbol_table[lookup_name]
             except KeyError:
-                # Register a new symbol and create a new custom class. The new class
-                # name is registered at parser class's module level.
-                if symbol not in cls.SYMBOLS:
-                    if symbol != '(start)':  # for backward compatibility
-                        raise NameError('%r is not a symbol of the parser %r.' % (symbol, cls))
+                # Register a new symbol and create a new custom class. The new token
+                # class is registered globally in the module of the parser class.
 
                 kwargs['symbol'] = symbol
                 kwargs['lookup_name'] = lookup_name
@@ -792,14 +810,16 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         Builds the parser class. Checks if all declared symbols are defined
         and builds the regex tokenizer using the symbol related patterns.
         """
-        # For backward compatibility with external defined parsers
+        # Register a minimal set of special tokens
         if '(start)' not in cls.symbol_table:
             cls.register('(start)')
+        if '(end)' not in cls.symbol_table:
+            cls.register('(end)')
+        if '(invalid)' not in cls.symbol_table:
+            cls.register('(invalid)')
+        if '(unknown)' not in cls.symbol_table:
+            cls.register('(unknown)')
 
-        symbols = {tk.symbol for tk in cls.symbol_table.values()}
-        if not cls.SYMBOLS.issubset(symbols):
-            unregistered = list(s for s in cls.SYMBOLS if s not in symbols)
-            raise ValueError("The parser %r has unregistered symbols: %r" % (cls, unregistered))
         cls.tokenizer = cls.create_tokenizer(cls.symbol_table)
 
     build_tokenizer = build  # For backward compatibility

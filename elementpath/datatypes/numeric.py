@@ -26,9 +26,18 @@ class Float10(float, AnyAtomicType):
         if isinstance(value, str):
             value = collapse_white_spaces(value)
             if value in NUMERIC_INF_OR_NAN or cls.xsd_version != '1.0' and value == '+INF':
-                pass
+                if value == 'NaN':
+                    try:
+                        return float_nan
+                    except NameError:
+                        pass
             elif value.lower() in INVALID_NUMERIC:
                 raise ValueError('invalid value {!r} for xs:{}'.format(value, cls.name))
+        elif math.isnan(value):
+            try:
+                return float_nan
+            except NameError:
+                pass
 
         _value = super().__new__(cls, value)
         if _value > 3.4028235E38:
@@ -133,6 +142,10 @@ class Float10(float, AnyAtomicType):
 class Float(Float10):
     name = 'float'
     xsd_version = '1.1'
+
+
+# The instance used for xs:float NaN values in order to keep identity
+float_nan = Float10('NaN')
 
 
 class Integer(int, metaclass=AtomicTypeMeta):

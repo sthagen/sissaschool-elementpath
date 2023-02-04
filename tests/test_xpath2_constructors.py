@@ -21,8 +21,10 @@ except ImportError:
 from elementpath import XPathContext, AttributeNode
 from elementpath.datatypes import Timezone, DateTime10, DateTime, DateTimeStamp, \
     GregorianDay, GregorianMonth, GregorianMonthDay, GregorianYear10, GregorianYearMonth10, \
-    Duration, YearMonthDuration, DayTimeDuration, Date10, Time, QName, UntypedAtomic
+    Duration, YearMonthDuration, DayTimeDuration, Date10, Time, QName, UntypedAtomic, \
+    Base64Binary, HexBinary
 from elementpath.namespaces import XSD_NAMESPACE
+from elementpath.xpath_tokens import XPathConstructor
 
 try:
     from tests import xpath_test_class
@@ -31,6 +33,18 @@ except ImportError:
 
 
 class XPath2ConstructorsTest(xpath_test_class.XPathTestCase):
+
+    def test_constructor_class(self):
+        ntk = 0
+        for token_class in self.parser.symbol_table.values():
+            if issubclass(token_class, XPathConstructor):
+                self.assertEqual(token_class.label, 'constructor function')
+                self.assertEqual(token_class.lbp, 90)
+                self.assertEqual(token_class.rbp, 90)
+                ntk += 1
+
+        self.assertGreaterEqual(ntk, 45)
+        self.assertLessEqual(ntk, 50)
 
     def test_unknown_constructor(self):
         self.wrong_type("xs:unknown('5')", 'XPST0017', 'unknown constructor function')
@@ -46,7 +60,7 @@ class XPath2ConstructorsTest(xpath_test_class.XPathTestCase):
         self.check_value('xs:string(" hello  ")', ' hello  ')
         self.check_value('xs:string("\thello \n")', '\thello \n')
         self.check_value('xs:string(())', [])
-        self.wrong_syntax('xs:string(()', 'XPST0017')
+        self.wrong_type('xs:string(()', 'XPST0017')
 
         # canonical string representation of xs:hexBinary
         self.check_value('xs:string(xs:hexBinary("ef"))', 'EF')
@@ -618,34 +632,34 @@ class XPath2ConstructorsTest(xpath_test_class.XPathTestCase):
 
     def test_hex_binary_constructor(self):
         self.check_value('xs:hexBinary(())', [])
-        self.check_value('xs:hexBinary("84")', b'84')
-        self.check_value('xs:hexBinary(xs:hexBinary("84"))', b'84')
+        self.check_value('xs:hexBinary("84")', HexBinary(b'84'))
+        self.check_value('xs:hexBinary(xs:hexBinary("84"))', HexBinary(b'84'))
         self.wrong_type('xs:hexBinary(12)')
 
         root = self.etree.XML('<root a="84"/>')
         context = XPathContext(root)
-        self.check_value('xs:hexBinary(@a)', b'84', context=context)
+        self.check_value('xs:hexBinary(@a)', HexBinary('84'), context=context)
 
         context.item = UntypedAtomic('84')
-        self.check_value('xs:hexBinary(.)', b'84', context=context)
+        self.check_value('xs:hexBinary(.)', HexBinary('84'), context=context)
 
         context.item = '84'
-        self.check_value('xs:hexBinary(.)', b'84', context=context)
+        self.check_value('xs:hexBinary(.)', HexBinary('84'), context=context)
 
         context.item = b'84'
-        self.check_value('xs:hexBinary(.)', b'84', context=context)
+        self.check_value('xs:hexBinary(.)', HexBinary('84'), context=context)
 
         context.item = b'XY'
         self.check_value('xs:hexBinary(.)', ValueError, context=context)
 
         context.item = b'F859'
-        self.check_value('xs:hexBinary(.)', b'F859', context=context)
+        self.check_value('xs:hexBinary(.)', HexBinary(b'F859'), context=context)
 
     def test_base64_binary_constructor(self):
         self.check_value('xs:base64Binary(())', [])
-        self.check_value('xs:base64Binary("ODQ=")', b'ODQ=')
-        self.check_value('xs:base64Binary(xs:base64Binary("ODQ="))', b'ODQ=')
-        self.check_value('xs:base64Binary("YWJjZWZnaGk=")', b'YWJjZWZnaGk=')
+        self.check_value('xs:base64Binary("ODQ=")', Base64Binary(b'ODQ='))
+        self.check_value('xs:base64Binary(xs:base64Binary("ODQ="))', Base64Binary(b'ODQ='))
+        self.check_value('xs:base64Binary("YWJjZWZnaGk=")', Base64Binary(b'YWJjZWZnaGk='))
 
         self.wrong_value('xs:base64Binary("xyz")')
         self.wrong_value('xs:base64Binary("\u0411")')
@@ -654,16 +668,16 @@ class XPath2ConstructorsTest(xpath_test_class.XPathTestCase):
 
         root = self.etree.XML('<root a="YWJjZWZnaGk="/>')
         context = XPathContext(root)
-        self.check_value('xs:base64Binary(@a)', b'YWJjZWZnaGk=', context=context)
+        self.check_value('xs:base64Binary(@a)', Base64Binary(b'YWJjZWZnaGk='), context=context)
 
         context.item = UntypedAtomic('YWJjZWZnaGk=')
-        self.check_value('xs:base64Binary(.)', b'YWJjZWZnaGk=', context=context)
+        self.check_value('xs:base64Binary(.)', Base64Binary(b'YWJjZWZnaGk='), context=context)
 
         context.item = b'abcefghi'  # Don't change, it can be an encoded value.
-        self.check_value('xs:base64Binary(.)', b'abcefghi', context=context)
+        self.check_value('xs:base64Binary(.)', Base64Binary(b'abcefghi'), context=context)
 
         context.item = b'YWJjZWZnaGlq'
-        self.check_value('xs:base64Binary(.)', b'YWJjZWZnaGlq', context=context)
+        self.check_value('xs:base64Binary(.)', Base64Binary(b'YWJjZWZnaGlq'), context=context)
 
     def test_untyped_atomic_constructor(self):
         self.check_value('xs:untypedAtomic(())', [])

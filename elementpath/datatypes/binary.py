@@ -22,11 +22,15 @@ class AbstractBinary(metaclass=AtomicTypeMeta):
     Abstract class for xs:base64Binary data.
 
     :param value: a string or a binary data or an untyped atomic instance.
+    :param ordered: a boolean that enable total ordering for the instance, `False` for default.
     """
     value: bytes
     invalid_type: Callable[[Any], TypeError]
 
-    def __init__(self, value: Union[str, bytes, UntypedAtomic, 'AbstractBinary']) -> None:
+    def __init__(self, value: Union[str, bytes, UntypedAtomic, 'AbstractBinary'],
+                 ordered: bool = False) -> None:
+        self.ordered = ordered
+
         if isinstance(value, self.__class__):
             self.value = value.value
         elif isinstance(value, AbstractBinary):
@@ -62,6 +66,52 @@ class AbstractBinary(metaclass=AtomicTypeMeta):
     @abstractmethod
     def decode(self) -> bytes:
         raise NotImplementedError()
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, AbstractBinary):
+            return self.decode() == other.decode()
+        else:
+            return NotImplemented
+
+    def __lt__(self, other: object) -> bool:
+        if not self.ordered or not isinstance(other, AbstractBinary):
+            return NotImplemented
+
+        for oct1, oct2 in zip(self.decode(), other.decode()):
+            if oct1 != oct2:
+                return oct1 < oct2
+
+        return len(self.decode()) < len(other.decode())
+
+    def __le__(self, other: object) -> bool:
+        if not self.ordered or not isinstance(other, AbstractBinary):
+            return NotImplemented
+
+        for oct1, oct2 in zip(self.decode(), other.decode()):
+            if oct1 != oct2:
+                return oct1 < oct2
+
+        return len(self.decode()) <= len(other.decode())
+
+    def __gt__(self, other: object) -> bool:
+        if not self.ordered or not isinstance(other, AbstractBinary):
+            return NotImplemented
+
+        for oct1, oct2 in zip(self.decode(), other.decode()):
+            if oct1 != oct2:
+                return oct1 > oct2
+
+        return len(self.decode()) > len(other.decode())
+
+    def __ge__(self, other: object) -> bool:
+        if not self.ordered or not isinstance(other, AbstractBinary):
+            return NotImplemented
+
+        for oct1, oct2 in zip(self.decode(), other.decode()):
+            if oct1 != oct2:
+                return oct1 > oct2
+
+        return len(self.decode()) >= len(other.decode())
 
 
 class Base64Binary(AbstractBinary):
@@ -99,15 +149,6 @@ class Base64Binary(AbstractBinary):
         elif self.value[-1] == ord('='):
             return len(self.value) // 4 * 3 - 1
         return len(self.value) // 4 * 3
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, self.__class__):
-            return self.value == other.value
-        elif isinstance(other, UntypedAtomic):
-            return self.value == self.__class__(other).value
-        elif isinstance(other, str):
-            return self.value == other.encode()
-        return isinstance(other, bytes) and self.value == other
 
     @staticmethod
     def encoder(value: bytes) -> bytes:
@@ -149,12 +190,3 @@ class HexBinary(AbstractBinary):
 
     def __len__(self) -> int:
         return len(self.value) // 2
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, self.__class__):
-            return self.value.upper() == other.value.upper()
-        elif isinstance(other, UntypedAtomic):
-            return self.value.upper() == self.__class__(other).value.upper()
-        elif isinstance(other, str):
-            return self.value.upper() == other.encode().upper()
-        return isinstance(other, bytes) and self.value.upper() == other.upper()

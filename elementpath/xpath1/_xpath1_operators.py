@@ -25,6 +25,7 @@ from ..xpath_context import XPathSchemaContext
 from ..namespaces import XMLNS_NAMESPACE, XSD_NAMESPACE
 from ..schema_proxy import AbstractSchemaProxy
 from ..xpath_nodes import XPathNode, ElementNode, AttributeNode, DocumentNode
+from ..xpath_tokens import XPathToken
 
 from .xpath1_parser import XPath1Parser
 
@@ -50,7 +51,10 @@ axis = XPath1Parser.axis
 @method(register('(name)', bp=10, label='literal'))
 def nud_name_literal(self):
     if self.parser.next_token.symbol == '::':
-        raise self.missing_axis("axis '%s::' not found" % self.value)
+        msg = "axis '%s::' not found" % self.value
+        if self.parser.compatibility_mode:
+            raise self.error('XPST0010', msg)
+        raise self.error('XPST0003', msg)
     elif self.parser.next_token.symbol == '(':
         if self.parser.version >= '2.0':
             pass  # XP30+ has led() for '(' operator that can check this
@@ -124,98 +128,113 @@ def select_name_literal(self, context=None):
 
 ###
 # Namespace prefix reference
-@method(':', bp=95)
-def led_namespace_prefix(self, left):
-    if self.parser.version == '1.0':
-        left.expected('(name)')
-    else:
-        left.expected('(name)', '*')
+class NamespacePrefixToken(XPathToken):
 
-    if not self.parser.next_token.label.endswith('function'):
-        self.parser.expected_name('(name)', '*')
-    if self.parser.is_spaced():
-        raise self.wrong_syntax("a QName cannot contains spaces before or after ':'")
+    symbol = lookup_name = ':'
+    lbp = 95
+    rbp = 95
 
-    if left.symbol == '(name)':
-        try:
-            namespace = self.get_namespace(left.value)
-        except ElementPathKeyError:
-            self.parser.advance()  # Assure there isn't a following incomplete comment
-            self[:] = left, self.parser.token
-            msg = "prefix {!r} is not declared".format(left.value)
-            raise self.error('XPST0081', msg) from None
+    def __init__(self, parser, value=None):
+        super().__init__(parser, value)
+
+        # Change bind powers if it cannot be a namespace related token
+        if self.is_spaced():
+            self.lbp = self.rbp = 0
+        elif self.parser.token.symbol not in ('*', '(name)', 'array'):
+            self.lbp = self.rbp = 0
+
+    def led(self, left):
+        version = self.parser.version
+        if self.is_spaced():
+            if version <= '3.0':
+                raise self.wrong_syntax("a QName cannot contains spaces before or after ':'")
+            return left
+
+        if version == '1.0':
+            left.expected('(name)')
+        elif version <= '3.0':
+            left.expected('(name)', '*')
+        elif left.symbol not in ('(name)', '*'):
+            return left
+
+        if not self.parser.next_token.label.endswith('function'):
+            self.parser.expected_next('(name)', '*')
+
+        if left.symbol == '(name)':
+            try:
+                namespace = self.get_namespace(left.value)
+            except ElementPathKeyError:
+                self.parser.advance()  # Assure there isn't a following incomplete comment
+                self[:] = left, self.parser.token
+                msg = "prefix {!r} is not declared".format(left.value)
+                raise self.error('XPST0081', msg) from None
+            else:
+                self.parser.next_token.bind_namespace(namespace)
+        elif self.parser.next_token.symbol != '(name)':
+            raise self.wrong_syntax()
+
+        self[:] = left, self.parser.expression(95)
+        self.value = '{}:{}'.format(self[0].value, self[1].value)
+        return self
+
+    def evaluate(self, context=None):
+        if self[1].label.endswith('function'):
+            return self[1].evaluate(context)
+        return [x for x in self.select(context)]
+
+    def select(self, context=None):
+        if self[1].label.endswith('function'):
+            value = self[1].evaluate(context)
+            if isinstance(value, list):
+                yield from value
+            elif value is not None:
+                yield value
+            return
+
+        if self[0].value == '*':
+            name = '*:%s' % self[1].value
         else:
-            self.parser.next_token.bind_namespace(namespace)
-    elif self.parser.next_token.symbol != '(name)':
-        raise self.wrong_syntax()
+            name = '{%s}%s' % (self.get_namespace(self[0].value), self[1].value)
 
-    self[:] = left, self.parser.expression(90)
-    self.value = '{}:{}'.format(self[0].value, self[1].value)
+        if context is None:
+            yield name
+        elif isinstance(context, XPathSchemaContext):
+            yield from self.select_xsd_nodes(context, name)
 
-    if self.parser.next_token.symbol == ':':
-        raise self.wrong_syntax()
-
-    return self
-
-
-@method(':')
-def evaluate_namespace_prefix(self, context=None):
-    if self[1].label.endswith('function'):
-        return self[1].evaluate(context)
-    return [x for x in self.select(context)]
-
-
-@method(':')
-def select_namespace_prefix(self, context=None):
-    if self[1].label.endswith('function'):
-        value = self[1].evaluate(context)
-        if isinstance(value, list):
-            yield from value
-        elif value is not None:
-            yield value
-        return
-
-    if self[0].value == '*':
-        name = '*:%s' % self[1].value
-    else:
-        name = '{%s}%s' % (self.get_namespace(self[0].value), self[1].value)
-
-    if context is None:
-        yield name
-    elif isinstance(context, XPathSchemaContext):
-        yield from self.select_xsd_nodes(context, name)
-
-    elif self.xsd_types is self.parser.schema:
-        for item in context.iter_children_or_self():
-            if item.match_name(name):
-                yield item
-
-    elif self.xsd_types is None or isinstance(self.xsd_types, AbstractSchemaProxy):
-        for item in context.iter_children_or_self():
-            if item.match_name(name):
-                assert isinstance(item, (ElementNode, AttributeNode))
-                if item.xsd_type is not None:
+        elif self.xsd_types is self.parser.schema:
+            for item in context.iter_children_or_self():
+                if item.match_name(name):
                     yield item
-                else:
-                    xsd_node = self.parser.schema.find(item.path, self.parser.namespaces)
-                    if xsd_node is not None:
-                        self.add_xsd_type(xsd_node)
+
+        elif self.xsd_types is None or isinstance(self.xsd_types, AbstractSchemaProxy):
+            for item in context.iter_children_or_self():
+                if item.match_name(name):
+                    assert isinstance(item, (ElementNode, AttributeNode))
+                    if item.xsd_type is not None:
+                        yield item
                     else:
-                        self.xsd_types = self.parser.schema
+                        xsd_node = self.parser.schema.find(item.path, self.parser.namespaces)
+                        if xsd_node is not None:
+                            self.add_xsd_type(xsd_node)
+                        else:
+                            self.xsd_types = self.parser.schema
 
-                    context.item = self.get_typed_node(item)
-                    yield context.item
+                        context.item = self.get_typed_node(item)
+                        yield context.item
 
-    else:
-        # XSD typed selection
-        for item in context.iter_children_or_self():
-            if item.match_name(name):
-                assert isinstance(item, (ElementNode, AttributeNode))
-                if item.xsd_type is not None:
-                    yield item
-                else:
-                    context.item = self.get_typed_node(item)
-                    yield context.item
+        else:
+            # XSD typed selection
+            for item in context.iter_children_or_self():
+                if item.match_name(name):
+                    assert isinstance(item, (ElementNode, AttributeNode))
+                    if item.xsd_type is not None:
+                        yield item
+                    else:
+                        context.item = self.get_typed_node(item)
+                        yield context.item
+
+
+XPath1Parser.symbol_table[':'] = NamespacePrefixToken
 
 
 ###
@@ -244,7 +263,7 @@ def nud_namespace_uri(self):
 
     self.parser.advance()
     if not self.parser.next_token.label.endswith('function'):
-        self.parser.expected_name('(name)', '*')
+        self.parser.expected_next('(name)', '*')
     self.parser.next_token.bind_namespace(namespace)
 
     self[:] = self.parser.symbol_table['(string)'](self.parser, namespace), \
@@ -295,7 +314,7 @@ def select_namespace_uri(self, context=None):
 # Variables
 @method('$', bp=90)
 def nud_variable_reference(self):
-    self.parser.expected_name('(name)')
+    self.parser.expected_next('(name)')
     self[:] = self.parser.expression(rbp=90),
     if ':' in self[0].value:
         raise self[0].wrong_syntax("variable reference requires a simple reference name")
@@ -308,9 +327,11 @@ def evaluate_variable_reference(self, context=None):
         raise self.missing_context()
 
     try:
-        return context.variables[self[0].value]
+        value = context.variables[self[0].value]
     except KeyError as err:
-        raise self.missing_name('unknown variable %r' % str(err)) from None
+        raise self.error('XPST0008', 'unknown variable %r' % str(err)) from None
+    else:
+        return value if value is not None else []
 
 
 ###
@@ -320,7 +341,7 @@ def select_wildcard(self, context=None):
     if self:
         # Product operator
         item = self.evaluate(context)
-        if item is not None:
+        if item or not isinstance(item, list):
             if context is not None:
                 context.item = item
             yield item
@@ -452,44 +473,46 @@ def evaluate_comparison_operators(self, context=None):
 def evaluate_plus_operator(self, context=None):
     if len(self) == 1:
         arg = self.get_argument(context, cls=NumericProxy)
-        if arg is not None:
-            return +arg
+        return [] if arg is None else +arg
     else:
         op1, op2 = self.get_operands(context, cls=ArithmeticProxy)
-        if op1 is not None:
-            try:
-                return op1 + op2
-            except TypeError as err:
-                raise self.error('XPTY0004', err) from None
-            except OverflowError as err:
-                if isinstance(op1, AbstractDateTime):
-                    raise self.error('FODT0001', err) from None
-                elif isinstance(op1, Duration):
-                    raise self.error('FODT0002', err) from None
-                else:
-                    raise self.error('FOAR0002', err) from None
+        if op1 is None:
+            return []
+
+        try:
+            return op1 + op2
+        except TypeError as err:
+            raise self.error('XPTY0004', err) from None
+        except OverflowError as err:
+            if isinstance(op1, AbstractDateTime):
+                raise self.error('FODT0001', err) from None
+            elif isinstance(op1, Duration):
+                raise self.error('FODT0002', err) from None
+            else:
+                raise self.error('FOAR0002', err) from None
 
 
 @method(infix('-', bp=40))
 def evaluate_minus_operator(self, context=None):
     if len(self) == 1:
         arg = self.get_argument(context, cls=NumericProxy)
-        if arg is not None:
-            return -arg
+        return [] if arg is None else -arg
     else:
         op1, op2 = self.get_operands(context, cls=ArithmeticProxy)
-        if op1 is not None:
-            try:
-                return op1 - op2
-            except TypeError as err:
-                raise self.error('XPTY0004', err) from None
-            except OverflowError as err:
-                if isinstance(op1, AbstractDateTime):
-                    raise self.error('FODT0001', err) from None
-                elif isinstance(op1, Duration):
-                    raise self.error('FODT0002', err) from None
-                else:
-                    raise self.error('FOAR0002', err) from None
+        if op1 is None:
+            return []
+
+        try:
+            return op1 - op2
+        except TypeError as err:
+            raise self.error('XPTY0004', err) from None
+        except OverflowError as err:
+            if isinstance(op1, AbstractDateTime):
+                raise self.error('FODT0001', err) from None
+            elif isinstance(op1, Duration):
+                raise self.error('FODT0002', err) from None
+            else:
+                raise self.error('FOAR0002', err) from None
 
 
 @method('+')
@@ -503,34 +526,35 @@ def nud_plus_minus_operators(self):
 def evaluate_multiply_operator(self, context=None):
     if self:
         op1, op2 = self.get_operands(context, cls=ArithmeticProxy)
-        if op1 is not None:
-            try:
-                if isinstance(op2, (YearMonthDuration, DayTimeDuration)):
-                    return op2 * op1
-                return op1 * op2
-            except TypeError as err:
-                if isinstance(op1, (float, decimal.Decimal)):
-                    if math.isnan(op1):
-                        raise self.error('FOCA0005') from None
-                    elif math.isinf(op1):
-                        raise self.error('FODT0002') from None
+        if op1 is None:
+            return []
+        try:
+            if isinstance(op2, (YearMonthDuration, DayTimeDuration)):
+                return op2 * op1
+            return op1 * op2
+        except TypeError as err:
+            if isinstance(op1, (float, decimal.Decimal)):
+                if math.isnan(op1):
+                    raise self.error('FOCA0005') from None
+                elif math.isinf(op1):
+                    raise self.error('FODT0002') from None
 
-                if isinstance(op2, (float, decimal.Decimal)):
-                    if math.isnan(op2):
-                        raise self.error('FOCA0005') from None
-                    elif math.isinf(op2):
-                        raise self.error('FODT0002') from None
+            if isinstance(op2, (float, decimal.Decimal)):
+                if math.isnan(op2):
+                    raise self.error('FOCA0005') from None
+                elif math.isinf(op2):
+                    raise self.error('FODT0002') from None
 
-                raise self.error('XPTY0004', err) from None
-            except ValueError as err:
-                raise self.error('FOCA0005', err) from None
-            except OverflowError as err:
-                if isinstance(op1, AbstractDateTime):
-                    raise self.error('FODT0001', err) from None
-                elif isinstance(op1, Duration):
-                    raise self.error('FODT0002', err) from None
-                else:
-                    raise self.error('FOAR0002', err) from None
+            raise self.error('XPTY0004', err) from None
+        except ValueError as err:
+            raise self.error('FOCA0005', err) from None
+        except OverflowError as err:
+            if isinstance(op1, AbstractDateTime):
+                raise self.error('FODT0001', err) from None
+            elif isinstance(op1, Duration):
+                raise self.error('FODT0002', err) from None
+            else:
+                raise self.error('FOAR0002', err) from None
     else:
         # This is not a multiplication operator but a wildcard select statement
         return [x for x in self.select(context)]
@@ -540,7 +564,7 @@ def evaluate_multiply_operator(self, context=None):
 def evaluate_div_operator(self, context=None):
     dividend, divisor = self.get_operands(context, cls=ArithmeticProxy)
     if dividend is None:
-        return
+        return []
     elif divisor != 0:
         try:
             if isinstance(dividend, int) and isinstance(divisor, int):
@@ -564,7 +588,7 @@ def evaluate_div_operator(self, context=None):
             isinstance(divisor, (int, decimal.Decimal)):
         raise self.error('FOAR0001')
     elif dividend == 0:
-        return float('nan')
+        return math.nan
     elif dividend > 0:
         return float('-inf') if str(divisor).startswith('-') else float('inf')
     else:
@@ -574,20 +598,21 @@ def evaluate_div_operator(self, context=None):
 @method(infix('mod', bp=45))
 def evaluate_mod_operator(self, context=None):
     op1, op2 = self.get_operands(context, cls=NumericProxy)
-    if op1 is not None:
-        if op2 == 0 and isinstance(op2, float):
-            return float('nan')
-        elif math.isinf(op2) and not math.isinf(op1) and op1 != 0:
-            return op1 if self.parser.version != '1.0' else float('nan')
+    if op1 is None:
+        return []
+    elif op2 == 0 and isinstance(op2, float):
+        return math.nan
+    elif math.isinf(op2) and not math.isinf(op1) and op1 != 0:
+        return op1 if self.parser.version != '1.0' else math.nan
 
-        try:
-            if isinstance(op1, int) and isinstance(op2, int):
-                return op1 % op2 if op1 * op2 >= 0 else -(abs(op1) % op2)
-            return op1 % op2
-        except TypeError as err:
-            raise self.error('FORG0006', err) from None
-        except (ZeroDivisionError, decimal.InvalidOperation):
-            raise self.error('FOAR0001') from None
+    try:
+        if isinstance(op1, int) and isinstance(op2, int):
+            return op1 % op2 if op1 * op2 >= 0 else -(abs(op1) % op2)
+        return op1 % op2
+    except TypeError as err:
+        raise self.error('FORG0006', err) from None
+    except (ZeroDivisionError, decimal.InvalidOperation):
+        raise self.error('FOAR0001') from None
 
 
 # Resolve the intrinsic ambiguity of some infix operators
@@ -595,9 +620,8 @@ def evaluate_mod_operator(self, context=None):
 @method('and')
 @method('div')
 @method('mod')
-def nud_logical_div_mod_operators(self):
-    token = self.parser.symbol_table['(name)'](self.parser, self.symbol)
-    return token.nud()
+def nud_disambiguation_of_infix_operators(self):
+    return self.as_name()
 
 
 ###
@@ -630,7 +654,7 @@ def select_union_operator(self, context=None):
 @method('//', bp=75)
 def nud_descendant_path(self):
     if self.parser.next_token.label not in self.parser.PATH_STEP_LABELS:
-        self.parser.expected_name(*self.parser.PATH_STEP_SYMBOLS)
+        self.parser.expected_next(*self.parser.PATH_STEP_SYMBOLS)
 
     self[:] = self.parser.expression(75),
     return self
@@ -640,7 +664,7 @@ def nud_descendant_path(self):
 def nud_child_path(self):
     if self.parser.next_token.label not in self.parser.PATH_STEP_LABELS:
         try:
-            self.parser.expected_name(*self.parser.PATH_STEP_SYMBOLS)
+            self.parser.expected_next(*self.parser.PATH_STEP_SYMBOLS)
         except SyntaxError:
             return self
 
@@ -651,8 +675,14 @@ def nud_child_path(self):
 @method('//')
 @method('/')
 def led_child_or_descendant_path(self, left):
+    if left.symbol in ('/', '//', ':', '[', '$'):
+        pass
+    elif left.label not in self.parser.PATH_STEP_LABELS and \
+            left.symbol not in self.parser.PATH_STEP_SYMBOLS:
+        raise self.wrong_syntax()
+
     if self.parser.next_token.label not in self.parser.PATH_STEP_LABELS:
-        self.parser.expected_name(*self.parser.PATH_STEP_SYMBOLS)
+        self.parser.expected_next(*self.parser.PATH_STEP_SYMBOLS)
 
     self[:] = left, self.parser.expression(75)
     return self

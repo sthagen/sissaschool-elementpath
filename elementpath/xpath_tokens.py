@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2022, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -8,42 +8,34 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 """
-XPathToken and helper functions for XPath nodes. XPath error messages and node helper functions
-are embedded in XPathToken class, in order to raise errors related to token instances.
-
-In XPath there are 7 kinds of nodes:
-
-    element, attribute, text, namespace, processing-instruction, comment, document
-
-Element-like objects are used for representing elements and comments, ElementTree-like objects
-for documents.
-XPathNode subclasses are used for representing other node types and typed elements/attributes.
+XPathToken class and derived classes for other XPath objects (functions, constructors,
+axes, maps, arrays). XPath's error creation and node helper functions are embedded in
+XPathToken class, in order to raise errors related to token instances.
 """
 import decimal
-import locale
-import contextlib
 import math
 from copy import copy
 from decimal import Decimal
 from itertools import product
-from typing import TYPE_CHECKING, cast, Dict, Optional, List, Tuple, Union, \
-    Any, Iterator, SupportsFloat, Type
+from typing import TYPE_CHECKING, cast, Dict, Optional, List, Tuple, \
+    Union, Any, Iterable, Iterator, SupportsFloat, Type
 import urllib.parse
 
-from .exceptions import ElementPathError, ElementPathValueError, ElementPathNameError, \
-    ElementPathTypeError, ElementPathSyntaxError, MissingContextError, XPATH_ERROR_CODES
-from .helpers import ordinal
-from .namespaces import XQT_ERRORS_NAMESPACE, XSD_NAMESPACE, XSD_SCHEMA, \
-    XPATH_FUNCTIONS_NAMESPACE, XPATH_MATH_FUNCTIONS_NAMESPACE, XSD_DECIMAL, \
+from .exceptions import ElementPathError, ElementPathValueError, \
+    ElementPathTypeError, MissingContextError, xpath_error
+from .helpers import ordinal, get_double, split_function_test
+from .namespaces import XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, \
+    XPATH_MATH_FUNCTIONS_NAMESPACE, XSD_SCHEMA, XSD_DECIMAL, \
     XSD_ANY_TYPE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE
 from .xpath_nodes import XPathNode, ElementNode, AttributeNode, \
     DocumentNode, NamespaceNode, SchemaElementNode
-from .datatypes import xsd11_atomic_types, AbstractDateTime, AnyURI, \
+from .datatypes import xsd10_atomic_types, AbstractDateTime, AnyURI, \
     UntypedAtomic, Timezone, DateTime10, Date10, DayTimeDuration, Duration, \
     Integer, DoubleProxy10, DoubleProxy, QName, DatetimeValueType, \
-    AtomicValueType, AnyAtomicType, Float10, Float
+    AtomicValueType, AnyAtomicType
 from .protocols import ElementProtocol, DocumentProtocol, XsdAttributeProtocol, \
     XsdElementProtocol, XsdTypeProtocol, XsdSchemaProtocol
+from .sequence_types import is_sequence_type_restriction, match_sequence_type
 from .schema_proxy import AbstractSchemaProxy
 from .tdop import Token, MultiLabel
 from .xpath_context import XPathContext, XPathSchemaContext
@@ -56,8 +48,6 @@ if TYPE_CHECKING:
     XPathParserType = Union[XPath1Parser, XPath2Parser, XPath30Parser]
 else:
     XPathParserType = Any
-
-UNICODE_CODEPOINT_COLLATION = "http://www.w3.org/2005/xpath-functions/collation/codepoint"
 
 _XSD_SPECIAL_TYPES = {XSD_ANY_TYPE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE}
 
@@ -77,7 +67,12 @@ ClassCheckType = Union[Type[Any], Tuple[Type[Any], ...]]
 PrincipalNodeType = Union[ElementProtocol, AttributeNode, ElementNode]
 OperandsType = Tuple[Optional[AtomicValueType], Optional[AtomicValueType]]
 XPathResultType = Union[
-    AtomicValueType, ElementProtocol, XsdAttributeProtocol, Tuple[Optional[str], str]
+    AtomicValueType,
+    ElementProtocol,
+    XsdAttributeProtocol,
+    Tuple[Optional[str], str],
+    DocumentProtocol,
+    DocumentNode
 ]
 
 XPathTokenType = Union['XPathToken', 'XPathAxis', 'XPathFunction', 'XPathConstructor']
@@ -114,13 +109,10 @@ class XPathToken(Token[XPathTokenType]):
         :param context: The XPath dynamic context.
         """
         item = self.evaluate(context)
-        if item is not None:
-            if isinstance(item, list):
-                yield from item
-            else:
-                if context is not None:
-                    context.item = item
-                yield item
+        if isinstance(item, list):
+            yield from item
+        else:
+            yield item
 
     def __str__(self) -> str:
         symbol, label = self.symbol, self.label
@@ -138,7 +130,7 @@ class XPathToken(Token[XPathTokenType]):
     def source(self) -> str:
         symbol = self.symbol
         if self.label == 'axis':
-            # For XPath 2.0 'attribute' multi-role token ('kind test', 'axis')
+            # For XPath 2.0 'attribute' multirole token ('kind test', 'axis')
             return '%s::%s' % (symbol, self[0].source)
         elif symbol == ':':
             if self.occurrence:
@@ -160,7 +152,7 @@ class XPathToken(Token[XPathTokenType]):
             return '%s, %s' % (self[0].source, self[1].source)
         elif symbol == '$' or symbol == '@':
             return f'{symbol}{self[0].source}'
-        elif symbol == '{':
+        elif symbol == '{' or symbol == 'Q{':
             return '{%s}%s' % (self[0].value, self[1].value)
         elif symbol == 'if':
             return 'if (%s) then %s else %s' % (self[0].source, self[1].source, self[2].source)
@@ -207,6 +199,38 @@ class XPathToken(Token[XPathTokenType]):
             for tk in self._items:
                 yield from tk.iter_leaf_elements()
 
+    def parse_sequence_type(self) -> 'XPathToken':
+        if self.parser.next_token.label in ('kind test', 'sequence type', 'function test'):
+            token = self.parser.expression(rbp=85)
+        else:
+            if self.parser.next_token.symbol == 'Q{':
+                token = self.parser.advance().nud()
+            elif self.parser.next_token.symbol != '(name)':
+                raise self.wrong_syntax()
+            else:
+                self.parser.advance()
+                if self.parser.next_token.symbol == ':':
+                    left = self.parser.token
+                    self.parser.advance()
+                    token = self.parser.token.led(left)
+                else:
+                    token = self.parser.token
+
+                if self.parser.next_token.symbol in ('::', '('):
+                    raise self.parser.next_token.wrong_syntax()
+
+        next_symbol = self.parser.next_token.symbol
+        if token.symbol != 'empty-sequence' and next_symbol in ('?', '*', '+'):
+            token.occurrence = next_symbol
+            self.parser.advance()
+        return token
+
+    def parse_occurrence(self) -> None:
+        if self.parser.next_token.symbol in ('*', '+', '?'):
+            self.occurrence = self.parser.next_token.symbol
+            self.parser.advance()
+            self.parser.next_token.unexpected('*', '+', '?')
+
     ###
     # Dynamic context methods
     def get_argument(self, context: Optional[XPathContext],
@@ -234,7 +258,7 @@ class XPathToken(Token[XPathTokenType]):
         item: Union[None, ElementProtocol, DocumentProtocol, XPathNode, AnyAtomicType]
 
         try:
-            selector = self._items[index].select
+            token = self._items[index]
         except IndexError:
             if default_to_context:
                 if context is None:
@@ -246,8 +270,11 @@ class XPathToken(Token[XPathTokenType]):
             else:
                 return default
         else:
+            if isinstance(token, XPathFunction) and token.is_reference():
+                return token  # It's a function reference
+
             item = None
-            for k, result in enumerate(selector(copy(context))):
+            for k, result in enumerate(token.select(copy(context))):
                 if k == 0:
                     item = result
                 elif self.parser.compatibility_mode:
@@ -258,9 +285,8 @@ class XPathToken(Token[XPathTokenType]):
                     # node coherency is already checked at schema level.
                     break
                 else:
-                    raise self.wrong_context_type(
-                        "a sequence of more than one item is not allowed as argument"
-                    )
+                    msg = "a sequence of more than one item is not allowed as argument"
+                    raise self.error('XPTY0004', msg)
             else:
                 if item is None:
                     if not required:
@@ -270,11 +296,47 @@ class XPathToken(Token[XPathTokenType]):
                     raise self.error('XPTY0004', msg.format(ord_arg))
 
         if cls is not None:
-            return self.validated_value(item, cls, promote)
+            return self.validated_value(item, cls, promote, index)
         return item
 
+    def get_argument_tokens(self) -> List['XPathToken']:
+        """
+        Builds and returns the argument tokens list, expanding the comma tokens.
+        """
+        tk = self
+        tokens = []
+        while True:
+            if tk.symbol == ',':
+                tokens.append(tk[1])
+                tk = tk[0]
+            else:
+                tokens.append(tk)
+                return tokens[::-1]
+
+    def get_function(self, context: Optional[XPathContext], arity: int = 0) -> 'XPathFunction':
+        if isinstance(self, XPathFunction):
+            func = self
+        elif self.symbol in (':', 'Q{') and isinstance(self[1], XPathFunction):
+            func = self[1]
+        elif self.symbol == '(name)':
+            msg = f'unknown function: {self.value}#{arity}'
+            raise self.error('XPST0017', msg)
+        else:
+            func = self.evaluate(context)
+            if not isinstance(func, XPathFunction):
+                msg = f'unknown function: {func}#{arity}'
+                raise self.error('XPST0017', msg)
+
+        max_args = func.max_args
+        if func.min_args > arity or max_args is not None and max_args < arity:
+            msg = f'unknown function: {func.symbol}#{arity}'
+            raise self.error('XPST0017', msg)
+
+        return func
+
     def validated_value(self, item: Any, cls: Type[Any],
-                        promote: Optional[ClassCheckType] = None) -> Any:
+                        promote: Optional[ClassCheckType] = None,
+                        index: Optional[int] = None) -> Any:
         """
         Type promotion checking (see "function conversion rules" in XPath 2.0 language definition)
         """
@@ -305,27 +367,56 @@ class XPathToken(Token[XPathTokenType]):
 
             code = 'FOTY0012' if value is None else 'XPTY0004'
 
-        message = "item type is {!r} instead of {!r}"
-        raise self.error(code, message.format(type(item), cls))
+        if index is None:
+            msg = f"item type is {type(item)!r} instead of {cls!r}"
+        else:
+            msg = f"{ordinal(index+1)} argument has type {type(item)!r} instead of {cls!r}"
+        raise self.error(code, msg)
+
+    def iter_flatten(self, context: Optional[XPathContext] = None) -> Iterator[Any]:
+
+        def _iter_flatten(items: Iterable[Any]) -> Iterator[Any]:
+            for item in items:
+                if isinstance(item, list):
+                    yield from _iter_flatten(item)
+                elif isinstance(item, XPathArray):
+                    yield from item.iter_flatten(context)
+                else:
+                    yield item
+
+        yield from _iter_flatten(self.select(context))
 
     def atomization(self, context: Optional[XPathContext] = None) \
             -> Iterator[AtomicValueType]:
         """
         Helper method for value atomization of a sequence.
 
-        Ref: https://www.w3.org/TR/xpath20/#id-atomization
+        Ref: https://www.w3.org/TR/xpath31/#id-atomization
 
         :param context: the XPath dynamic context.
         """
-        for item in self.select(context):
-            value = self.data_value(item)
-            if value is None:
-                msg = "argument node {!r} does not have a typed value"
-                raise self.error('FOTY0012', msg.format(item))
-            elif isinstance(value, list):
-                yield from value
+        for item in self.iter_flatten(context):
+            if isinstance(item, XPathNode):
+                try:
+                    value = item.typed_value
+                except (TypeError, ValueError) as err:
+                    raise self.error('XPDY0050', str(err))
+                else:
+                    if value is None:
+                        msg = f"argument node {item!r} does not have a typed value"
+                        raise self.error('FOTY0012', msg)
+                    elif isinstance(value, list):
+                        yield from value
+                    else:
+                        yield value
+
+            elif isinstance(item, XPathFunction) and not isinstance(item, XPathArray):
+                raise self.error('FOTY0013', f"{item.label!r} has no typed value")
+            elif isinstance(item, AnyAtomicType):
+                yield cast(AtomicValueType, item)
             else:
-                yield value
+                msg = f"sequence item {item!r} is not appropriate for the context"
+                raise self.error('XPTY0004', msg)
 
     def get_atomized_operand(self, context: Optional[XPathContext] = None) \
             -> Optional[AtomicValueType]:
@@ -362,12 +453,12 @@ class XPathToken(Token[XPathTokenType]):
                             value = xsd_type.decode(value)
                         except (TypeError, ValueError):
                             msg = "Type {!r} is not appropriate for the context"
-                            raise self.wrong_context_type(msg.format(type(value)))
+                            raise self.error('XPTY0004', msg.format(type(value)))
 
                 return value
             else:
                 msg = "atomized operand is a sequence of length greater than one"
-                raise self.wrong_context_type(msg)
+                raise self.error('XPTY0004', msg)
 
     def iter_comparison_data(self, context: XPathContext) -> Iterator[OperandsType]:
         """
@@ -445,6 +536,11 @@ class XPathToken(Token[XPathTokenType]):
                     yield result.prefix, result.uri
                 else:
                     yield result.uri
+            elif isinstance(result, DocumentNode):
+                if result.is_extended():
+                    yield result
+                else:
+                    yield result.value
             else:
                 yield result.value
 
@@ -469,6 +565,11 @@ class XPathToken(Token[XPathTokenType]):
                     results.append((item.prefix, item.uri))
                 else:
                     results.append(item.uri)
+            elif isinstance(item, DocumentNode):
+                if item.is_extended():
+                    results.append(item)
+                else:
+                    results.append(item.value)
             else:
                 results.append(item.value)
 
@@ -613,7 +714,7 @@ class XPathToken(Token[XPathTokenType]):
         self.namespace = namespace
 
     def adjust_datetime(self, context: XPathContext, cls: Type[DatetimeValueType]) \
-            -> Optional[Union[DatetimeValueType, DayTimeDuration]]:
+            -> Union[List[Any], DatetimeValueType, DayTimeDuration]:
         """
         XSD datetime adjust function helper.
 
@@ -629,7 +730,7 @@ class XPathToken(Token[XPathTokenType]):
         if len(self) == 1:
             item = self.get_argument(context, cls=cls)
             if item is None:
-                return None
+                return []
             timezone = getattr(context, 'timezone', None)
         else:
             item = self.get_argument(context, cls=cls)
@@ -641,9 +742,9 @@ class XPathToken(Token[XPathTokenType]):
                 except ValueError as err:
                     raise self.error('FODT0003', str(err)) from None
             if item is None:
-                return None
+                return []
 
-        _item = item
+        _item = copy(item)
         _tzinfo = _item.tzinfo
         try:
             if _tzinfo is not None and timezone is not None:
@@ -660,24 +761,6 @@ class XPathToken(Token[XPathTokenType]):
         if not isinstance(_item, DayTimeDuration):
             _item.tzinfo = timezone
         return _item
-
-    @contextlib.contextmanager
-    def use_locale(self, collation: str) -> Iterator[None]:
-        """A context manager for use a locale setting for string comparison in a code block."""
-        loc = locale.getlocale(locale.LC_COLLATE)
-        if collation == UNICODE_CODEPOINT_COLLATION or collation == 'collation/codepoint':
-            collation = 'en_US.UTF-8'
-        elif collation is None:
-            raise self.error('XPTY0004', 'collation cannot be an empty sequence')
-
-        try:
-            locale.setlocale(locale.LC_COLLATE, collation)
-        except locale.Error:
-            raise self.error('FOCH0002', 'Unsupported collation %r' % collation) from None
-        else:
-            yield
-        finally:
-            locale.setlocale(locale.LC_COLLATE, loc)
 
     ###
     # XSD types related methods
@@ -858,31 +941,26 @@ class XPathToken(Token[XPathTokenType]):
         if obj is None or not type_name.startswith('xs:') or type_name.count(':') != 1:
             return obj
 
-        values = obj if isinstance(obj, list) else [obj]
-        if not values:
-            return obj
+        type_name = type_name[3:].rstrip('+*?')
+        token = cast(XPathConstructor, self.parser.symbol_table[type_name](self.parser))
 
-        if type_name[-1] in '+*?':
-            type_name = type_name[:-1]
+        def cast_value(v: Any) -> Any:
+            try:
+                if isinstance(v, (UntypedAtomic, AnyURI)):
+                    return token.cast(v)
+                elif isinstance(v, float) or \
+                        isinstance(v, xsd10_atomic_types[XSD_DECIMAL]):
+                    if type_name in ('double', 'float'):
+                        return token.cast(v)
+            except (ValueError, TypeError):
+                return v
+            else:
+                return v
 
-        result = []
-        for v in values:
-            if self.parser.is_instance(v, XSD_DECIMAL):
-                if type_name == 'xs:double':
-                    result.append(float(v))
-                    continue
-                elif type_name == 'xs:float':
-                    if self.parser.xsd_version == '1.0':
-                        result.append(Float10(v))
-                    else:
-                        result.append(Float(v))
-                    continue
-
-            result.append(v)
-
-        if isinstance(obj, list) or len(result) > 1:
-            return result
-        return result[0]
+        if isinstance(obj, list):
+            return [cast_value(x) for x in obj]
+        else:
+            return cast_value(obj)
 
     ###
     # XPath data accessors base functions
@@ -929,7 +1007,11 @@ class XPathToken(Token[XPathTokenType]):
             except (TypeError, ValueError) as err:
                 raise self.error('XPDY0050', str(err))
         elif isinstance(obj, XPathFunction):
-            raise self.error('FOTY0013', f"{obj.label!r} has no typed value")
+            if not isinstance(obj, XPathArray):
+                raise self.error('FOTY0013', f"{obj.label!r} has no typed value")
+
+            values = [self.data_value(x) for x in obj.iter_flatten()]
+            return values[0] if len(values) == 1 else None
         else:
             return cast(AtomicValueType, obj)
 
@@ -965,7 +1047,10 @@ class XPathToken(Token[XPathTokenType]):
             return value
 
         elif isinstance(obj, XPathFunction):
-            raise self.error('FOTY0014', f"{obj.label!r} has no string value")
+            if self.symbol in ('concat', '||'):
+                raise self.error('FOTY0013', f"an argument of {self} is a function")
+            else:
+                raise self.error('FOTY0014', f"{obj.label!r} has no string value")
 
         return str(obj)
 
@@ -974,80 +1059,19 @@ class XPathToken(Token[XPathTokenType]):
         The numeric value, as computed by fn:number() on each item. Returns a float value.
         """
         try:
-            return float(self.string_value(obj) if isinstance(obj, XPathNode) else obj)
+            if isinstance(obj, XPathNode):
+                return get_double(self.string_value(obj), self.parser.xsd_version)
+            else:
+                return get_double(obj, self.parser.xsd_version)
         except (TypeError, ValueError):
-            return float('nan')
+            return math.nan
 
     ###
-    # Error handling helpers
-    def error_code(self, code: str) -> str:
-        """Returns a prefixed error code."""
-        if self.parser.namespaces.get('err') == XQT_ERRORS_NAMESPACE:
-            return 'err:%s' % code
-
-        for pfx, uri in self.parser.namespaces.items():
-            if uri == XQT_ERRORS_NAMESPACE:
-                return '%s:%s' % (pfx, code) if pfx else code
-
-        return code  # returns an unprefixed code (without prefix the namespace is not checked)
-
+    # Error handling helpers and shortcuts
     def error(self, code: Union[str, QName],
               message_or_error: Union[None, str, Exception] = None) -> ElementPathError:
-        """
-        Returns an XPath error instance related with a code. An XPath/XQuery/XSLT
-        error code is an alphanumeric token starting with four uppercase letters
-        and ending with four digits.
+        return xpath_error(code, message_or_error, self, self.parser.namespaces)
 
-        :param code: the error code as QName or string.
-        :param message_or_error: an optional custom message or an exception.
-        """
-        namespace: Optional[str]
-
-        if isinstance(code, QName):
-            namespace = code.uri
-            code = code.local_name
-        elif ':' not in code:
-            namespace = None
-        else:
-            try:
-                prefix, code = code.split(':')
-            except ValueError:
-                raise ElementPathValueError(
-                    message='%r is not a prefixed name' % code,
-                    code=self.error_code('XPTY0004'),
-                    token=self,
-                )
-            else:
-                namespace = self.parser.namespaces.get(prefix)
-
-        if namespace and namespace != XQT_ERRORS_NAMESPACE:
-            raise ElementPathValueError(
-                message='%r namespace is required' % XQT_ERRORS_NAMESPACE,
-                code=self.error_code('XPTY0004'),
-                token=self,
-            )
-
-        try:
-            error_class, default_message = XPATH_ERROR_CODES[code]
-        except KeyError:
-            raise ElementPathValueError(
-                message='unknown XPath error code %r' % code,
-                code=self.error_code('XPTY0004'),
-                token=self,
-            )
-
-        if message_or_error is None:
-            message = default_message
-        elif isinstance(message_or_error, str):
-            message = message_or_error
-        elif isinstance(message_or_error, ElementPathError):
-            message = message_or_error.message
-        else:
-            message = str(message_or_error)
-
-        return error_class(message, code=self.error_code(code), token=self)
-
-    # Shortcuts for XPath errors, only the wrong_syntax
     def expected(self, *symbols: str,
                  message: Optional[str] = None,
                  code: str = 'XPST0003') -> None:
@@ -1080,27 +1104,6 @@ class XPathToken(Token[XPathTokenType]):
     def missing_context(self, message: Optional[str] = None) -> MissingContextError:
         return cast(MissingContextError, self.error('XPDY0002', message))
 
-    def wrong_context_type(self, message: Optional[str] = None) -> ElementPathTypeError:
-        return cast(ElementPathTypeError, self.error('XPTY0004', message))
-
-    def missing_name(self, message: Optional[str] = None) -> ElementPathNameError:
-        return cast(ElementPathNameError, self.error('XPST0008', message))
-
-    def missing_axis(self, message: Optional[str] = None) \
-            -> Union[ElementPathNameError, ElementPathSyntaxError]:
-        if self.parser.compatibility_mode:
-            return cast(ElementPathNameError, self.error('XPST0010', message))
-        return cast(ElementPathSyntaxError, self.error('XPST0003', message))
-
-    def wrong_nargs(self, message: Optional[str] = None) -> ElementPathTypeError:
-        return cast(ElementPathTypeError, self.error('XPST0017', message))
-
-    def wrong_sequence_type(self, message: Optional[str] = None) -> ElementPathTypeError:
-        return cast(ElementPathTypeError, self.error('XPDY0050', message))
-
-    def unknown_atomic_type(self, message: Optional[str] = None) -> ElementPathNameError:
-        return cast(ElementPathNameError, self.error('XPST0051', message))
-
 
 class XPathAxis(XPathToken):
     pattern = r'\b[^\d\W][\w.\-\xb7\u0300-\u036F\u203F\u2040]*(?=\s*\:\:|\s*\(\:.*\:\)\s*\:\:)'
@@ -1109,7 +1112,7 @@ class XPathAxis(XPathToken):
 
     def nud(self) -> 'XPathAxis':
         self.parser.advance('::')
-        self.parser.expected_name(
+        self.parser.expected_next(
             '(name)', '*', '{', 'Q{', 'text', 'node', 'document-node',
             'comment', 'processing-instruction', 'element', 'attribute',
             'schema-attribute', 'schema-element', 'namespace-node',
@@ -1179,11 +1182,8 @@ class XPathFunction(XPathToken):
     nargs: NargsType = None
     "Number of arguments: a single value or a couple with None that means unbounded."
 
-    body: Optional[XPathToken] = None
-    "Body of anonymous inline function."
-
-    variables: Optional[Dict[str, Any]] = None
-    "Optional variables linked by let and for expressions."
+    context: Optional[XPathContext] = None
+    "Dynamic context associated by function reference evaluation."
 
     def __init__(self, parser: 'XPath1Parser', nargs: Optional[int] = None) -> None:
         super().__init__(parser)
@@ -1201,6 +1201,7 @@ class XPathFunction(XPathToken):
 
     def __call__(self, context: Optional[XPathContext] = None,
                  *args: XPathFunctionArgType) -> Any:
+        self.check_arguments_number(len(args))
 
         # Check provided argument with arity
         if self.nargs is None or self.nargs == len(args):
@@ -1216,50 +1217,9 @@ class XPathFunction(XPathToken):
             raise self.error('XPTY0004', "too many arguments")
 
         context = copy(context)
-        if self.variables is not None and context is not None:
-            context.variables.update(self.variables)
-
-        if self.symbol == 'function':
-            if context is None:
-                raise self.missing_context()
-            elif not args and self:
-                if context.item is None:
-                    if isinstance(context.root, DocumentNode):
-                        context.item = context.root.getroot()
-                    else:
-                        context.item = context.root
-
-                args = cast(Tuple[Union[XPathNode, XPathToken, AtomicValueType]], (context.item,))
-
-            partial_function = False
-            if self.variables is None:
-                self.variables = {}
-
-            for variable, sequence_type, value in zip(self, self.sequence_types, args):
-                varname = cast(str, variable[0].value)
-
-                if isinstance(value, XPathToken) and value.symbol == '?':
-                    partial_function = True
-                    continue
-                elif isinstance(value, XPathFunction) and sequence_type.startswith('function('):
-                    if not value.match_function_test(sequence_type, as_argument=True):
-                        msg = "argument {!r}: {} does not match sequence type {}"
-                        raise self.error('XPTY0004', msg.format(varname, value, sequence_type))
-
-                elif not self.parser.match_sequence_type(value, sequence_type):
-                    value = self.cast_to_primitive_type(value, sequence_type)
-                    if not self.parser.match_sequence_type(value, sequence_type):
-                        msg = "argument {!r}: {} does not match sequence type {}"
-                        raise self.error('XPTY0004', msg.format(varname, value, sequence_type))
-
-                context.variables[varname] = self.variables[varname] = value
-
-            if partial_function:
-                return self
-
-        elif self.label == 'partial function':
+        if self.label == 'partial function':
             for value, tk in zip(args, filter(lambda x: x.symbol == '?', self)):
-                if isinstance(value, XPathToken):
+                if isinstance(value, XPathToken) and not isinstance(value, XPathFunction):
                     tk.value = value.evaluate(context)
                 else:
                     tk.value = value
@@ -1271,8 +1231,8 @@ class XPathFunction(XPathToken):
                 else:
                     self._items.append(ValueToken(self.parser, value=value))
 
-            if any(tk.symbol == '?' for tk in self._items):
-                self._partial_function()
+            if any(tk.symbol == '?' and not tk for tk in self._items):
+                self.to_partial_function()
                 return self
 
         if isinstance(self.label, MultiLabel):
@@ -1288,22 +1248,36 @@ class XPathFunction(XPathToken):
 
         if self.label == 'partial function':
             result = self._partial_evaluate(context)
-        elif self.body is not None:
-            assert self.label == 'inline function'
-            result = self.body.evaluate(context)
         else:
             result = self.evaluate(context)
 
-        if isinstance(result, XPathToken) and result.symbol == '?':
-            pass
-        elif not self.parser.match_sequence_type(result, self.sequence_types[-1]):
-            result = self.cast_to_primitive_type(result, self.sequence_types[-1])
-            if not self.parser.match_sequence_type(result, self.sequence_types[-1]):
-                msg = "{!r} does not match sequence type {}"
-                self.parser.match_sequence_type(result, self.sequence_types[-1])
-                raise self.error('XPTY0004', msg.format(result, self.sequence_types[-1]))
+        return self.validated_result(result)
 
-        return result
+    def check_arguments_number(self, nargs: int) -> None:
+        """Check the number of arguments against function arity."""
+        if self.nargs is None or self.nargs == nargs:
+            pass
+        elif isinstance(self.nargs, tuple):
+            if nargs < self.nargs[0]:
+                raise self.error('XPTY0004', "missing required arguments")
+            elif self.nargs[1] is not None and nargs > self.nargs[1]:
+                raise self.error('XPTY0004', "too many arguments")
+        elif self.nargs > nargs:
+            raise self.error('XPTY0004', "missing required arguments")
+        else:
+            raise self.error('XPTY0004', "too many arguments")
+
+    def validated_result(self, result: Any) -> Any:
+        if isinstance(result, XPathToken) and result.symbol == '?':
+            return result
+        elif match_sequence_type(result, self.sequence_types[-1], self.parser):
+            return result
+
+        _result = self.cast_to_primitive_type(result, self.sequence_types[-1])
+        if not match_sequence_type(_result, self.sequence_types[-1], self.parser):
+            msg = "{!r} does not match sequence type {}"
+            raise self.error('XPTY0004', msg.format(result, self.sequence_types[-1]))
+        return _result
 
     @property
     def source(self) -> str:
@@ -1350,9 +1324,35 @@ class XPathFunction(XPathToken):
             return self.nargs
         return len(self._items)
 
+    @property
+    def min_args(self) -> int:
+        if isinstance(self.nargs, int):
+            return self.nargs
+        elif isinstance(self.nargs, (tuple, list)):
+            return self.nargs[0]
+        else:
+            return 0
+
+    @property
+    def max_args(self) -> Optional[int]:
+        if isinstance(self.nargs, int):
+            return self.nargs
+        elif isinstance(self.nargs, (tuple, list)):
+            return self.nargs[1]
+        else:
+            return None
+
+    def is_reference(self) -> int:
+        if not isinstance(self.nargs, int):
+            return False
+        return self.nargs and not len(self._items)
+
     def nud(self) -> 'XPathFunction':
-        code = 'XPST0017' if self.label == 'function' else 'XPST0003'
         self.value = None
+        if not self.parser.parse_arguments:
+            return self
+
+        code = 'XPST0017' if self.label == 'function' else 'XPST0003'
         self.parser.advance('(')
         if self.nargs is None:
             del self._items[:]
@@ -1380,13 +1380,14 @@ class XPathFunction(XPathToken):
             while k < min_args:
                 if self.parser.next_token.symbol in (')', '(end)'):
                     msg = 'Too few arguments: expected at least %s arguments' % min_args
-                    raise self.wrong_nargs(msg if min_args > 1 else msg[:-1])
+                    raise self.error('XPST0017', msg if min_args > 1 else msg[:-1])
 
                 self._items[k:] = self.parser.expression(5),
                 k += 1
                 if k < min_args:
                     if self.parser.next_token.symbol == ')':
-                        msg = 'Too few arguments: expected at least %s arguments' % min_args
+                        msg = f'{str(self)}: Too few arguments, expected ' \
+                              f'at least {min_args} arguments'
                         raise self.error(code, msg if min_args > 1 else msg[:-1])
                     self.parser.advance(',')
 
@@ -1405,33 +1406,30 @@ class XPathFunction(XPathToken):
                 raise self.error(code, msg if max_args != 1 else msg[:-1])
 
         self.parser.advance(')')
-        if any(tk.symbol == '?' for tk in self._items):
-            self._partial_function()
+        if any(tk.symbol == '?' and not tk for tk in self._items):
+            self.to_partial_function()
 
         return self
 
-    def match_function_test(self, function_test: str, as_argument: bool = False) -> bool:
+    def match_function_test(self, function_test: Union[str, List[str]],
+                            as_argument: bool = False) -> bool:
         """
-        Match if function signature is a subtype of provided *function_test*.
+        Match if function signature satisfies the provided *function_test*.
         For default return type is covariant and arguments are contravariant.
-        If *as_argument* is `True` the match is inverted and also the return
-        type is considered contravariant.
+        If *as_argument* is `True` the match is inverted.
 
         References:
           https://www.w3.org/TR/xpath-31/#id-function-test
           https://www.w3.org/TR/xpath-31/#id-sequencetype-subtype
         """
-        if not function_test.startswith('function('):
+        if isinstance(function_test, list):
+            sequence_types = function_test
+        else:
+            sequence_types = split_function_test(function_test)
+        if not sequence_types or not sequence_types[-1]:
             return False
-        elif function_test == 'function(*)':
+        elif sequence_types[0] == '*':
             return True
-
-        parts = function_test[9:].partition(') as ')
-        if not parts[1] or not parts[2]:
-            return False
-
-        sequence_types = parts[0].split(', ')
-        sequence_types.append(parts[2])
 
         signature = [x for x in self.sequence_types[:self.arity]]
         signature.append(self.sequence_types[-1])
@@ -1440,75 +1438,41 @@ class XPathFunction(XPathToken):
             return False
 
         if as_argument:
-            iterator = zip(sequence_types, signature)
+            iterator = zip(sequence_types[:-1], signature[:-1])
         else:
-            iterator = zip(signature, sequence_types)
+            iterator = zip(signature[:-1], sequence_types[:-1])
 
-        k = 0
-        for fst, st in iterator:
-            k += 1
-            if not as_argument and k == len(sequence_types):
-                st, fst = fst, st
-
-            if st[-1] in '*+?':
-                st_occurs = st[-1]
-                st = st[:-1]
-            else:
-                st_occurs = ''
-
-            if fst[-1] in '*+?':
-                fst_occurs = fst[-1]
-                fst = fst[:-1]
-            else:
-                fst_occurs = ''
-
-            if st_occurs == fst_occurs or fst_occurs == '*':
-                pass
-            elif not fst_occurs:
-                if st_occurs not in '?*':
-                    return False
-            elif fst_occurs == '+':
-                if st_occurs:
-                    return False
-            elif st_occurs:
+        # compare sequence types
+        for st1, st2 in iterator:
+            if not is_sequence_type_restriction(st1, st2):
                 return False
+        else:
+            st1, st2 = sequence_types[-1], signature[-1]
+            return is_sequence_type_restriction(st1, st2)
 
-            if st == fst:
-                continue
-            elif fst == 'item()':
-                continue
-            elif st == 'item()':
-                return False
-            elif fst.startswith('xs:') ^ st.startswith('xs:'):
-                return False
-            elif fst.startswith('xs:'):
-                if not issubclass(xsd11_atomic_types[st[3:]],
-                                  xsd11_atomic_types[fst[3:]]):
-                    return False
-            elif fst != 'node()':
-                return False
+    def to_partial_function(self) -> None:
+        """Convert a function to a partial function."""
+        nargs = len([tk and not tk for tk in self._items if tk.symbol == '?'])
+        assert nargs, "a partial function requires at least a placeholder token"
 
-        return True
+        if self.label != 'partial function':
+            def evaluate(context: Optional[XPathContext] = None) -> Any:
+                return self
 
-    def _partial_function(self) -> None:
-        """Convert a named function to an anonymous partial function."""
-        def evaluate(context: Optional[XPathContext] = None) -> Any:
-            return self
+            def select(context: Optional[XPathContext] = None) -> Any:
+                yield self
 
-        def select(context: Optional[XPathContext] = None) -> Any:
-            yield self
+            if self.__class__.evaluate is not XPathToken.evaluate:
+                setattr(self, '_partial_evaluate', self.evaluate)
+            if self.__class__.select is not XPathToken.select:
+                setattr(self, '_partial_select', self.select)
 
-        if self.__class__.evaluate is not XPathToken.evaluate:
-            setattr(self, '_partial_evaluate', self.evaluate)
-        if self.__class__.select is not XPathToken.select:
-            setattr(self, '_partial_select', self.select)
-
-        setattr(self, 'evaluate', evaluate)
-        setattr(self, 'select', select)
+            setattr(self, 'evaluate', evaluate)
+            setattr(self, 'select', select)
 
         self._name = None
         self.label = 'partial function'
-        self.nargs = len([tk for tk in self._items if tk.symbol == '?'])
+        self.nargs = nargs
 
     def _partial_evaluate(self, context: Optional[XPathContext] = None) -> Any:
         return [x for x in self._partial_select(context)]
@@ -1535,24 +1499,69 @@ class XPathConstructor(XPathFunction):
 
 class XPathMap(XPathFunction):
     """
-    A token for processing XPath 3.1+ maps.
+    A token for processing XPath 3.1+ maps. Map instances have the double role of
+    tokens and of dictionaries, depending on the way that are created (using a map
+    constructor or a function). The map is fully set after the protected attribute
+    _map is evaluated from tokens or initialized from arguments.
     """
+    symbol = 'map'
+    label = 'map'
     pattern = r'(?<!\$)\bmap(?=\s*(?:\(\:.*\:\))?\s*\{(?!\:))'
-    _map: Optional[Dict[AnyAtomicType, Any]] = None
+    _map: Optional[Dict[Optional[AnyAtomicType], Any]] = None
     _values: List[XPathToken]
+    _nan_key: Optional[float] = None
 
-    def __init__(self, parser: 'XPath1Parser', nargs: Optional[int] = None) -> None:
+    def __init__(self, parser: 'XPath1Parser', items: Optional[Any] = None) -> None:
+        super().__init__(parser)
         self._values = []
-        super().__init__(parser, nargs)
+        if items is not None:
+            _items = items.items() if isinstance(items, dict) else items
+            _map: Dict[Any, Any] = {}
+            for k, v in _items:
+                if k is None:
+                    raise self.error('XPTY0004', 'missing key value')
+                elif isinstance(k, float) and math.isnan(k):
+                    if self._nan_key is not None:
+                        raise self.error('XQDY0137')
+                    self._nan_key, _map[None] = k, v
+                    continue
+                elif k in _map:
+                    raise self.error('XQDY0137')
+
+                if isinstance(v, list):
+                    _map[k] = v[0] if len(v) == 1 else v
+                else:
+                    _map[k] = v
+
+            self._map = _map
+
+    def __repr__(self) -> str:
+        return '%s(%r)' % (self.__class__.__name__, self._map)
+
+    def __str__(self) -> str:
+        return self.label
+
+    def __len__(self) -> int:
+        if self._map is None:
+            return len(self._items)
+        return len(self._map)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, XPathMap):
+            if self._map is None or other._map is None:
+                raise ElementPathValueError("cannot compare not evaluated maps")
+            return self._map == other._map
+        return NotImplemented
 
     def nud(self) -> 'XPathMap':
         self.parser.advance('{')
         del self._items[:]
         if self.parser.next_token.symbol not in ('}', '(end)'):
             while True:
-                key = self.parser.expression(95)  # ':'
+                key = self.parser.expression(5)
                 self._items.append(key)
-                self.parser.advance(':')
+                if self.parser.token.symbol != ':':
+                    self.parser.advance(':')
                 self._values.append(self.parser.expression(5))
 
                 if self.parser.next_token.symbol != ',':
@@ -1562,49 +1571,158 @@ class XPathMap(XPathFunction):
         self.parser.advance('}')
         return self
 
-    def evaluate(self, context: Optional[XPathContext] = None) -> Any:
-        _map = {}
-        for key, value in zip(self._items, self._values):
-            k = next(key.atomization(context), None)
-            if k is None:
-                self.error('XPST0003', 'missing key value')
-            assert k is not None
-            _map[k] = value.evaluate(context)
+    @property
+    def source(self) -> str:
+        if self._map is None:
+            items = ', '.join(f'{tk.source}:{tv.source}' for tk, tv in zip(self, self._values))
+        else:
+            items = ', '.join(f'{k!r}:{v!r}' for k, v in self._map.items())
+        return f'map{{{items}}}'
 
-        self._map = cast(Dict[AnyAtomicType, Any], _map)
-        return self
+    def evaluate(self, context: Optional[XPathContext] = None) -> 'XPathMap':
+        if self._map is not None:
+            return self
+        return XPathMap(
+            parser=self.parser,
+            items=(
+                (k.get_atomized_operand(context), v.evaluate(context))
+                for k, v in zip(self._items, self._values)
+            )
+        )
+
+    def _evaluate(self, context: Optional[XPathContext] = None) -> Dict[AnyAtomicType, Any]:
+        _map: Dict[Any, Any] = {}
+        nan_key = None
+
+        for key, value in zip(self._items, self._values):
+            k = key.get_atomized_operand(context)
+            if k is None:
+                raise self.error('XPTY0004', 'missing key value')
+            elif isinstance(k, float) and math.isnan(k):
+                if nan_key is not None:
+                    raise self.error('XQDY0137')
+                nan_key, _map[None] = k, value.evaluate(context)
+                continue
+            elif k in _map:
+                raise self.error('XQDY0137')
+
+            v = value.evaluate(context)
+            if isinstance(v, list):
+                _map[k] = v[0] if len(v) == 1 else v
+            else:
+                _map[k] = v
+
+        self._nan_key = nan_key
+        return cast(Dict[AnyAtomicType, Any], _map)
 
     def __call__(self, context: Optional[XPathContext] = None,
                  *args: XPathFunctionArgType) -> Any:
+        if len(args) == 1 and isinstance(args[0], list) and len(args[0]) == 1:
+            args = args[0][0],
         if len(args) != 1 or not isinstance(args[0], AnyAtomicType):
-            self.error('XPST0003', 'exactly one atomic argument is expected')
+            raise self.error('XPST0003', 'exactly one atomic argument is expected')
 
+        map_dict: Dict[Any, Any]
         key = cast(AnyAtomicType, args[0])
-        if self._map is None:
-            self.evaluate(context)
-            assert self._map is not None
-        return self._map.get(key)
+        if self._map is not None:
+            map_dict = self._map
+        else:
+            map_dict = self._evaluate(context)
+
+        try:
+            if isinstance(key, float) and math.isnan(key):
+                return map_dict[None]
+            else:
+                return map_dict[key]
+        except KeyError:
+            return []
 
     def keys(self, context: Optional[XPathContext] = None) -> List[AnyAtomicType]:
-        if self._map is None:
-            self.evaluate(context)
-            assert self._map is not None
-        return list(self._map.keys())
+        if self._map is not None:
+            keys = [self._nan_key if k is None else k for k in self._map.keys()]
+        else:
+            keys = [self._nan_key if k is None else k for k in self._evaluate(context).keys()]
+        return cast(List[AnyAtomicType], keys)
 
-    def contains(self, context: Optional[XPathContext] = None,
-                 key: Optional[AnyAtomicType] = None) -> bool:
-        if self._map is None:
-            self.evaluate(context)
-            assert self._map is not None
-        return key in self._map.keys()
+    def values(self, context: Optional[XPathContext] = None) -> List[Any]:
+        if self._map is not None:
+            return [v for v in self._map.values()]
+        return [v for v in self._evaluate(context).values()]
+
+    def items(self, context: Optional[XPathContext] = None) -> List[Tuple[AnyAtomicType, Any]]:
+        _map: Dict[Any, Any]
+        if self._map is not None:
+            _map = self._map
+        else:
+            _map = self._evaluate(context)
+
+        return [(self._nan_key, v) if k is None else (k, v) for k, v in _map.items()]
+
+    def match_function_test(self, function_test: Union[str, List[str]],
+                            as_argument: bool = False) -> bool:
+        if isinstance(function_test, list):
+            sequence_types = function_test
+        else:
+            sequence_types = split_function_test(function_test)
+
+        if not sequence_types or not sequence_types[-1]:
+            return False
+        elif sequence_types[0] == '*':
+            return True
+        elif len(sequence_types) != 2:
+            return False
+
+        key_st, value_st = sequence_types
+        if key_st.endswith(('+', '*')):
+            return False
+        elif value_st != 'empty-sequence()' and not value_st.endswith(('?', '*')):
+            return False
+        else:
+            return any(match_sequence_type(k, key_st, self.parser, False) and
+                       match_sequence_type(v, value_st, self.parser)
+                       for k, v in self.items())
 
 
 class XPathArray(XPathFunction):
     """
     A token for processing XPath 3.1+ arrays.
     """
+    symbol = 'array'
+    label = 'array'
     pattern = r'(?<!\$)\barray(?=\s*(?:\(\:.*\:\))?\s*\{(?!\:))'
     _array: Optional[List[Any]] = None
+
+    def __init__(self, parser: 'XPath1Parser',
+                 items: Optional[Iterable[Any]] = None) -> None:
+        if items is not None:
+            self._array = [x for x in items]
+        super().__init__(parser)
+
+    def __repr__(self) -> str:
+        return '%s(%r)' % (self.__class__.__name__, self._array)
+
+    def __str__(self) -> str:
+        return self.label
+
+    def __len__(self) -> int:
+        if self._array is None:
+            return len(self._items)
+        return len(self._array)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, XPathArray):
+            if self._array is None or other._array is None:
+                raise ElementPathValueError("cannot compare not evaluated arrays")
+            return self._array == other._array
+        return NotImplemented
+
+    @property
+    def source(self) -> str:
+        if self._array is None:
+            items = ', '.join(f'{tk.source}' for tk in self)
+        else:
+            items = ', '.join(f'{v!r}' for v in self._array)
+        return f'array{{{items}}}' if self.symbol == 'array' else f'[{items}]'
 
     def nud(self) -> 'XPathArray':
         self.value = None
@@ -1620,44 +1738,76 @@ class XPathArray(XPathFunction):
         self.parser.advance('}')
         return self
 
-    def evaluate(self, context: Optional[XPathContext] = None) -> Any:
-        _array: List[Any] = []
-        for tk in self._items:
-            _array.extend(tk.select(context))
-        self._array = _array
-        return self
+    def evaluate(self, context: Optional[XPathContext] = None) -> 'XPathArray':
+        if self._array is not None:
+            return self
+        return XPathArray(self.parser, items=self._evaluate(context))
+
+    def _evaluate(self, context: Optional[XPathContext] = None) -> List[Any]:
+        if self.symbol == 'array':
+            # A comma in a curly array constructor is the comma operator, not a delimiter.
+            items: List[Any] = []
+            for tk in self._items:
+                items.extend(tk.select(context))
+            return items
+        else:
+            return [tk.evaluate(context) for tk in self._items]
 
     def __call__(self, context: Optional[XPathContext] = None,
                  *args: XPathFunctionArgType) -> Any:
         if len(args) != 1 or not isinstance(args[0], int):
-            self.error('XPST0003', 'exactly one xs:integer argument is expected')
+            raise self.error('XPTY0004', 'exactly one xs:integer argument is expected')
 
-        position = cast(int, args[0])
+        position = args[0]
         if position <= 0:
-            self.error('FOAY0002' if position else 'FOAY0001')
+            raise self.error('FOAY0001')
 
-        if self._array is None:
-            self.evaluate(context)
-            assert self._array is not None
+        if self._array is not None:
+            items = self._array
+        else:
+            items = self._evaluate(context)
 
         try:
-            return self._array[position - 1]
+            return items[position - 1]
         except IndexError:
-            self.error('FOAY0001')
+            raise self.error('FOAY0001')
 
-    def put(self, position: int, member: Any, context: Optional[XPathContext] = None) \
-            -> 'XPathArray':
-        if position <= 0:
-            self.error('FOAY0002' if position else 'FOAY0001')
+    def items(self, context: Optional[XPathContext] = None) -> List[Any]:
+        if self._array is not None:
+            return self._array.copy()
+        return self._evaluate(context)
 
-        other = XPathArray(self.parser)
-        other.extend(self._items)
-        other.evaluate(context)
-        assert other._array is not None
+    def iter_flatten(self, context: Optional[XPathContext] = None) -> Iterator[Any]:
+        if self._array is not None:
+            items = self._array
+        else:
+            items = self._evaluate(context)
 
-        try:
-            other._array[position - 1] = member
-        except IndexError:
-            self.error('FOAY0001')
+        for item in items:
+            if isinstance(item, XPathArray):
+                yield from item.iter_flatten(context)
+            elif isinstance(item, list):
+                yield from item
+            else:
+                yield item
 
-        return other
+    def match_function_test(self, function_test: Union[str, List[Any]],
+                            as_argument: bool = False) -> bool:
+        if isinstance(function_test, list):
+            sequence_types = function_test
+        else:
+            sequence_types = split_function_test(function_test)
+
+        if not sequence_types or not sequence_types[-1]:
+            return False
+        elif sequence_types[0] == '*':
+            return True
+        elif len(sequence_types) != 2:
+            return False
+
+        index_type, value_type = sequence_types
+        if index_type.endswith(('+', '*')):
+            return False
+
+        return match_sequence_type(1, index_type) and \
+            all(match_sequence_type(v, value_type, self.parser) for v in self.items())

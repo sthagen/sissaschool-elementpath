@@ -12,27 +12,17 @@ XPath 1.0 implementation - part 1 (parser class and symbols)
 """
 import re
 from abc import ABCMeta
-from typing import cast, Any, ClassVar, Dict, FrozenSet, MutableMapping, \
+from typing import cast, Any, ClassVar, Dict, MutableMapping, \
     Optional, Tuple, Type, Set, Sequence
 
-from ..helpers import OCCURRENCE_INDICATORS, EQNAME_PATTERN, normalize_sequence_type
-from ..exceptions import MissingContextError, ElementPathKeyError, \
-    ElementPathValueError, xpath_error
-from ..datatypes import AnyAtomicType, NumericProxy, UntypedAtomic, QName, \
-    xsd10_atomic_types, xsd11_atomic_types
+from ..exceptions import MissingContextError, ElementPathValueError, xpath_error
+from ..datatypes import QName
 from ..tdop import Token, Parser
-from ..namespaces import NamespacesType, XML_NAMESPACE, XSD_NAMESPACE, XSD_ERROR, \
-    XPATH_FUNCTIONS_NAMESPACE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE, \
-    XSD_UNTYPED_ATOMIC, get_namespace, get_expanded_name
+from ..namespaces import NamespacesType, XML_NAMESPACE, XSD_NAMESPACE, \
+    XPATH_FUNCTIONS_NAMESPACE
+from ..sequence_types import match_sequence_type
 from ..schema_proxy import AbstractSchemaProxy
-from ..xpath_token import NargsType, XPathToken, XPathAxis, XPathFunction, ProxyToken
-from ..xpath_nodes import XPathNode, ElementNode, AttributeNode, DocumentNode
-
-COMMON_SEQUENCE_TYPES = {
-    'xs:untyped', 'untypedAtomic', 'attribute()', 'attribute(*)',
-    'element()', 'element(*)', 'text()', 'document-node()', 'comment()',
-    'processing-instruction()', 'item()', 'node()', 'numeric'
-}
+from ..xpath_tokens import NargsType, XPathToken, XPathAxis, XPathFunction, ProxyToken
 
 
 class XPath1Parser(Parser[XPathToken]):
@@ -54,37 +44,6 @@ class XPath1Parser(Parser[XPathToken]):
     )
     name_pattern = re.compile(r'[^\d\W][\w.\-\xb7\u0300-\u036F\u203F\u2040]*')
 
-    SYMBOLS: ClassVar[FrozenSet[str]] = Parser.SYMBOLS | {
-        # Axes
-        'descendant-or-self', 'following-sibling', 'preceding-sibling',
-        'ancestor-or-self', 'descendant', 'attribute', 'following',
-        'namespace', 'preceding', 'ancestor', 'parent', 'child', 'self',
-
-        # Operators
-        'and', 'mod', 'div', 'or', '..', '//', '!=', '<=', '>=', '(', ')', '[', ']',
-        ':', '.', '@', ',', '/', '|', '*', '-', '=', '+', '<', '>', '$', '::',
-
-        # Node test functions
-        'node', 'text', 'comment', 'processing-instruction',
-
-        # Node set functions
-        'last', 'position', 'count', 'id', 'name', 'local-name', 'namespace-uri',
-
-        # String functions
-        'string', 'concat', 'starts-with', 'contains',
-        'substring-before', 'substring-after', 'substring',
-        'string-length', 'normalize-space', 'translate',
-
-        # Boolean functions
-        'boolean', 'not', 'true', 'false', 'lang',
-
-        # Number functions
-        'number', 'sum', 'floor', 'ceiling', 'round',
-
-        # Symbols for ElementPath extensions
-        '{', '}'
-    }
-
     RESERVED_FUNCTION_NAMES = {
         'comment', 'element', 'node', 'processing-instruction', 'text'
     }
@@ -104,6 +63,7 @@ class XPath1Parser(Parser[XPathToken]):
     base_uri: Optional[str] = None
     function_namespace = XPATH_FUNCTIONS_NAMESPACE
     function_signatures: Dict[Tuple[QName, int], str] = {}
+    parse_arguments: bool = True
 
     compatibility_mode: bool = True
     """XPath 1.0 compatibility mode."""
@@ -146,13 +106,11 @@ class XPath1Parser(Parser[XPathToken]):
     def create_restricted_parser(cls, name: str, symbols: Sequence[str]) \
             -> Type['XPath1Parser']:
         """Get a parser subclass with a restricted set of symbols.s"""
-        _symbols = frozenset(symbols)
         symbol_table = {
-            k: v for k, v in cls.symbol_table.items()
-            if k in _symbols
+            k: v for k, v in cls.symbol_table.items() if k in symbols
         }
         return cast(Type['XPath1Parser'], ABCMeta(
-            f"{name}{cls.__name__}", (cls,), {'symbol_table': symbol_table, 'SYMBOLS': _symbols}
+            f"{name}{cls.__name__}", (cls,), {'symbol_table': symbol_table}
         ))
 
     @staticmethod
@@ -246,228 +204,31 @@ class XPath1Parser(Parser[XPathToken]):
             pass
         return root_token
 
-    def expected_name(self, *symbols: str, message: Optional[str] = None) -> None:
+    def expected_next(self, *symbols: str, message: Optional[str] = None) -> None:
         """
-        Checks the next symbol with a list of symbols. Replaces the next token
-        with a '(name)' token if check fails and the symbol can be also a name.
-        Otherwise raises a syntax error.
+        Checks the next token with a list of symbols. Replaces the next token with
+        a '(name)' token if the check fails and the next token can be a name,
+        otherwise raises a syntax error.
 
         :param symbols: a sequence of symbols.
         :param message: optional error message.
         """
         if self.next_token.symbol in symbols:
             return
-        elif self.next_token.label in ('operator', 'symbol', 'let expression', 'proxy function') \
-                and self.name_pattern.match(self.next_token.symbol) is not None:
-            token_class = self.symbol_table['(name)']
-            self.next_token = token_class(self, self.next_token.symbol)
+        elif '(name)' in symbols and \
+                not isinstance(self.next_token, (XPathFunction, XPathAxis)) and \
+                self.name_pattern.match(self.next_token.symbol) is not None:
+            # Disambiguation replacing the next token with a '(name)' token
+            self.next_token = self.symbol_table['(name)'](self, self.next_token.symbol)
         else:
             raise self.next_token.wrong_syntax(message)
-
-    ###
-    # Type checking (used in XPath 2.0)
-    def is_instance(self, obj: Any, type_qname: str) -> bool:
-        """Checks an instance against an XSD type."""
-        if get_namespace(type_qname) == XSD_NAMESPACE:
-            if type_qname == XSD_ERROR:
-                return obj is None or obj == []
-            elif type_qname == XSD_UNTYPED_ATOMIC:
-                return isinstance(obj, UntypedAtomic)
-            elif type_qname == XSD_ANY_ATOMIC_TYPE:
-                return isinstance(obj, AnyAtomicType)
-            elif type_qname == XSD_ANY_SIMPLE_TYPE:
-                return isinstance(obj, AnyAtomicType) or \
-                    isinstance(obj, list) and \
-                    all(isinstance(x, AnyAtomicType) for x in obj)
-
-            try:
-                if self.xsd_version == '1.1':
-                    return isinstance(obj, xsd11_atomic_types[type_qname])
-                return isinstance(obj, xsd10_atomic_types[type_qname])
-            except KeyError:
-                pass
-
-        if self.schema is not None:
-            try:
-                return self.schema.is_instance(obj, type_qname)
-            except KeyError:
-                pass
-
-        raise ElementPathKeyError("unknown type %r" % type_qname)
-
-    def is_sequence_type(self, value: str) -> bool:
-        """Checks if a string is a sequence type specification."""
-        try:
-            value = normalize_sequence_type(value)
-        except TypeError:
-            return False
-
-        if not value:
-            return False
-        elif value == 'empty-sequence()' or value == 'none':
-            return True
-        elif value in ('map(*)', 'array(*)') and self.version >= '3.1':
-            return True
-        elif value[-1] in OCCURRENCE_INDICATORS:
-            value = value[:-1]
-
-        if value in COMMON_SEQUENCE_TYPES:
-            return True
-
-        elif value.startswith('element(') and value.endswith(')'):
-            if ',' not in value:
-                return EQNAME_PATTERN.match(value[8:-1]) is not None
-
-            try:
-                arg1, arg2 = value[8:-1].split(', ')
-            except ValueError:
-                return False
-            else:
-                return (arg1 == '*' or EQNAME_PATTERN.match(arg1) is not None) \
-                    and EQNAME_PATTERN.match(arg2) is not None
-
-        elif value.startswith('document-node(') and value.endswith(')'):
-            if not value.startswith('document-node(element('):
-                return False
-            return self.is_sequence_type(value[14:-1])
-
-        elif value.startswith('function('):
-            if self.version >= '3.0':
-                if value == 'function(*)':
-                    return True
-                elif ' as ' in value:
-                    pass
-                elif not value.endswith(')'):
-                    return False
-                else:
-                    return self.is_sequence_type(value[9:-1])
-
-            try:
-                value, return_type = value.rsplit(' as ', 1)
-            except ValueError:
-                return False
-            else:
-                if not self.is_sequence_type(return_type):
-                    return False
-                elif value == 'function()':
-                    return True
-
-                value = value[9:-1]
-                if value.endswith(', ...'):
-                    value = value[:-5]
-
-                if 'function(' not in value:
-                    return all(self.is_sequence_type(x) for x in value.split(', '))
-
-                # Cover only if function() spec is the last argument
-                k = value.index('function(')
-                if not self.is_sequence_type(value[k:]):
-                    return False
-                return all(self.is_sequence_type(x) for x in value[:k].split(', ') if x)
-
-        elif QName.pattern.match(value) is None:
-            return False
-
-        try:
-            type_qname = get_expanded_name(value, self.namespaces)
-            self.is_instance(None, type_qname)
-        except (KeyError, ValueError):
-            return False
-        else:
-            return True
-
-    def match_sequence_type(self, value: Any,
-                            sequence_type: str,
-                            occurrence: Optional[str] = None) -> bool:
-        """
-        Checks a value instance against a sequence type.
-
-        :param value: the instance to check.
-        :param sequence_type: a string containing the sequence type spec.
-        :param occurrence: an optional occurrence spec, can be '?', '+' or '*'.
-        """
-        if sequence_type[-1] in OCCURRENCE_INDICATORS:
-            return self.match_sequence_type(value, sequence_type[:-1], sequence_type[-1])
-        elif value is None or isinstance(value, list) and value == []:
-            return sequence_type in ('empty-sequence()', 'none') or occurrence in ('?', '*')
-        elif sequence_type in ('empty-sequence()', 'none'):
-            return False
-        elif isinstance(value, list):
-            if len(value) == 1:
-                return self.match_sequence_type(value[0], sequence_type)
-            elif occurrence is None or occurrence == '?':
-                return False
-            else:
-                return all(self.match_sequence_type(x, sequence_type) for x in value)
-        elif sequence_type == 'item()':
-            return isinstance(value, XPathNode) \
-                   or isinstance(value, (AnyAtomicType, list, XPathFunction))
-        elif sequence_type == 'numeric':
-            return isinstance(value, NumericProxy)
-        elif sequence_type.startswith('function('):
-            if not isinstance(value, XPathFunction):
-                return False
-            return value.match_function_test(sequence_type)
-
-        if isinstance(value, XPathNode):
-            value_kind = value.kind
-        else:
-            try:
-                type_expanded_name = get_expanded_name(sequence_type, self.namespaces)
-                return self.is_instance(value, type_expanded_name)
-            except (KeyError, ValueError):
-                return False
-
-        if sequence_type == 'node()':
-            return True
-        elif not sequence_type.startswith(value_kind) or not sequence_type.endswith(')'):
-            return False
-        elif sequence_type == f'{value_kind}()':
-            return True
-        elif value_kind == 'document':
-            element_test = sequence_type[14:-1]
-            if not element_test:
-                return True
-            element_node = cast(DocumentNode, value).getroot()
-            return self.match_sequence_type(element_node, element_test)
-        elif value_kind not in ('element', 'attribute'):
-            return False
-
-        _, params = sequence_type[:-1].split('(')
-        if ',' not in sequence_type:
-            name = params
-        else:
-            name, type_name = params.split(',')
-            if type_name.endswith('?'):
-                type_name = type_name[:-1]
-            elif isinstance(value, ElementNode) and value.nilled:
-                return False
-
-            if type_name == 'xs:untyped':
-                if isinstance(value, (ElementNode, AttributeNode)) \
-                        and value.xsd_type is not None:
-                    return False
-            else:
-                try:
-                    type_expanded_name = get_expanded_name(type_name, self.namespaces)
-                    if not self.is_instance(value, type_expanded_name):
-                        return False
-                except (KeyError, ValueError):
-                    return False
-
-        if name == '*':
-            return True
-
-        try:
-            return bool(value.name == get_expanded_name(name, self.namespaces))
-        except (KeyError, ValueError, AttributeError):
-            return False
 
     def check_variables(self, values: MutableMapping[str, Any]) -> None:
         """Checks the sequence types of the XPath dynamic context's variables."""
         for varname, value in values.items():
-            if not self.match_sequence_type(
-                    value, 'item()', occurrence='*' if isinstance(value, list) else None):
+            if not match_sequence_type(
+                value, 'item()*' if isinstance(value, list) else 'item()', self
+            ):
                 message = "Unmatched sequence type for variable {!r}".format(varname)
                 raise xpath_error('XPDY0050', message)
 

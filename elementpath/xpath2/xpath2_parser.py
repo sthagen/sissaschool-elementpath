@@ -14,19 +14,20 @@ from abc import ABCMeta
 import locale
 from collections.abc import MutableSequence
 from urllib.parse import urlparse
-from typing import cast, Any, Callable, ClassVar, Dict, FrozenSet, List, \
+from typing import cast, Any, Callable, ClassVar, Dict, List, \
     MutableMapping, Optional, Tuple, Type, Union
 
-from ..helpers import normalize_sequence_type, get_locale_category
+from ..helpers import normalize_sequence_type
 from ..exceptions import ElementPathError, ElementPathTypeError, \
     ElementPathValueError, MissingContextError, xpath_error
 from ..namespaces import NamespacesType, XSD_NAMESPACE, XML_NAMESPACE, \
     XPATH_FUNCTIONS_NAMESPACE, XQT_ERRORS_NAMESPACE, \
     XSD_NOTATION, XSD_ANY_ATOMIC_TYPE, get_prefixed_name
+from ..collations import UNICODE_COLLATION_BASE_URI, UNICODE_CODEPOINT_COLLATION
 from ..datatypes import UntypedAtomic, AtomicValueType, QName
-from ..xpath_token import UNICODE_CODEPOINT_COLLATION, NargsType, \
-    XPathToken, XPathFunction, XPathConstructor
+from ..xpath_tokens import NargsType, XPathToken, XPathFunction, XPathConstructor
 from ..xpath_context import XPathContext
+from ..sequence_types import is_sequence_type, match_sequence_type
 from ..schema_proxy import AbstractSchemaProxy
 from ..xpath1 import XPath1Parser
 
@@ -71,111 +72,11 @@ class XPath2Parser(XPath1Parser):
     Default is 'node()*'.
     """
     version = '2.0'
-
-    SYMBOLS: ClassVar[FrozenSet[str]] = XPath1Parser.SYMBOLS | {
-        'union', 'intersect', 'instance', 'castable', 'if', 'then', 'else', 'for', 'to',
-        'some', 'every', 'in', 'satisfies', 'item', 'satisfies', 'cast', 'treat',
-        'return', 'except', '?', 'as', 'of',
-
-        # Comments
-        '(:', ':)',
-
-        # Value comparison operators
-        'eq', 'ne', 'lt', 'le', 'gt', 'ge',
-
-        # Node comparison operators
-        'is', '<<', '>>',
-
-        # Mathematical operators
-        'idiv',
-
-        # Node type functions
-        'document-node', 'schema-attribute', 'element', 'schema-element',
-        'attribute', 'empty-sequence',
-
-        # Accessor functions
-        'node-name', 'nilled', 'data', 'base-uri', 'document-uri',
-
-        # Number functions
-        'abs', 'round-half-to-even',
-
-        # Aggregate functions
-        'avg', 'min', 'max',
-
-        # String functions
-        'codepoints-to-string', 'string-to-codepoints', 'compare', 'codepoint-equal',
-        'string-join', 'normalize-unicode', 'upper-case', 'lower-case', 'encode-for-uri',
-        'iri-to-uri', 'escape-html-uri', 'ends-with',
-
-        # General functions for sequences
-        'distinct-values', 'empty', 'exists', 'index-of', 'insert-before', 'remove',
-        'reverse', 'subsequence', 'unordered',
-
-        # Cardinality functions for sequences
-        'zero-or-one', 'one-or-more', 'exactly-one',
-
-        # Comparing function for sequences
-        'deep-equal',
-
-        # Pattern matching functions
-        'matches', 'replace', 'tokenize',
-
-        # Functions on anyURI
-        'resolve-uri',
-
-        # Functions for extracting fragments from xs:duration
-        'years-from-duration', 'months-from-duration', 'days-from-duration',
-        'hours-from-duration', 'minutes-from-duration', 'seconds-from-duration',
-
-        # Functions for extracting fragments from xs:dateTime
-        'year-from-dateTime', 'month-from-dateTime', 'day-from-dateTime', 'hours-from-dateTime',
-        'minutes-from-dateTime', 'seconds-from-dateTime', 'timezone-from-dateTime',
-
-        # Functions for extracting fragments from xs:date
-        'year-from-date', 'month-from-date', 'day-from-date', 'timezone-from-date',
-
-        # Functions for extracting fragments from xs:time
-        'hours-from-time', 'minutes-from-time', 'seconds-from-time', 'timezone-from-time',
-
-        # Timezone adjustment functions
-        'adjust-dateTime-to-timezone', 'adjust-date-to-timezone', 'adjust-time-to-timezone',
-
-        # Functions Related to QNames (QName function is also a constructor)
-        'QName', 'local-name-from-QName', 'prefix-from-QName', 'local-name-from-QName',
-        'namespace-uri-from-QName', 'namespace-uri-for-prefix', 'in-scope-prefixes',
-        'resolve-QName',
-
-        # Static context functions
-        'default-collation', 'static-base-uri',
-
-        # Dynamic context functions
-        'current-dateTime', 'current-date', 'current-time', 'implicit-timezone',
-
-        # Node set functions
-        'root',
-
-        # Error function and trace function
-        'error', 'trace',
-
-        # XSD builtins constructors ('string', 'boolean' and 'QName' are
-        # already registered as functions)
-        'normalizedString', 'token', 'language', 'Name', 'NCName', 'ENTITY', 'ID',
-        'IDREF', 'NMTOKEN', 'anyURI', 'NOTATION', 'decimal', 'int', 'integer', 'long',
-        'short', 'byte', 'double', 'float', 'nonNegativeInteger', 'positiveInteger',
-        'nonPositiveInteger', 'negativeInteger', 'unsignedLong', 'unsignedInt',
-        'unsignedShort', 'unsignedByte', 'dateTime', 'date', 'time', 'gDay', 'gMonth',
-        'gYear', 'gMonthDay', 'gYearMonth', 'duration', 'dayTimeDuration',
-        'yearMonthDuration', 'dateTimeStamp', 'base64Binary', 'hexBinary', 'untypedAtomic',
-
-        # Functions and Operators that Generate Sequences ('id' changes but
-        # is already registered)
-        'element-with-id', 'idref', 'doc', 'doc-available', 'collection',
-    }
+    default_collation = UNICODE_CODEPOINT_COLLATION
 
     DEFAULT_NAMESPACES: ClassVar[Dict[str, str]] = {
         'xml': XML_NAMESPACE,
         'xs': XSD_NAMESPACE,
-        # 'xlink': XLINK_NAMESPACE,
         'fn': XPATH_FUNCTIONS_NAMESPACE,
         'err': XQT_ERRORS_NAMESPACE
     }
@@ -197,6 +98,10 @@ class XPath2Parser(XPath1Parser):
     token: XPathToken
     next_token: XPathToken
 
+    @staticmethod
+    def tracer(trace_data: str) -> None:
+        """Trace data collector"""
+
     def __init__(self, namespaces: Optional[NamespacesType] = None,
                  variable_types: Optional[Dict[str, str]] = None,
                  strict: bool = True,
@@ -213,7 +118,19 @@ class XPath2Parser(XPath1Parser):
 
         super(XPath2Parser, self).__init__(namespaces, strict)
         self.compatibility_mode = compatibility_mode
-        self._default_collation = default_collation
+
+        if default_collation is not None:
+            self.default_collation = default_collation
+        else:
+            # Obtain the current collation locale using setlocale() with `None`.
+            # Consider only configured UTF-8 encodings, otherwise keep Unicode
+            # Codepoint Collation.
+            _locale = locale.setlocale(locale.LC_COLLATE, None)
+            if '.' in _locale:
+                language_code, encoding = _locale.split('.')
+                if encoding.lower() == 'utf-8':
+                    self.default_collation = f'{UNICODE_COLLATION_BASE_URI}?lang={language_code}'
+
         self._xsd_version = xsd_version if xsd_version is not None else '1.0'
 
         if default_namespace is not None:
@@ -234,7 +151,7 @@ class XPath2Parser(XPath1Parser):
 
         if not variable_types:
             self.variable_types = {}
-        elif all(self.is_sequence_type(v) for v in variable_types.values()):
+        elif all(is_sequence_type(v, self) for v in variable_types.values()):
             self.variable_types = {
                 k: normalize_sequence_type(v) for k, v in variable_types.items()
             }
@@ -244,16 +161,16 @@ class XPath2Parser(XPath1Parser):
         self.base_uri = None if base_uri is None else urlparse(base_uri).geturl()
 
         if document_types:
-            if any(not self.is_sequence_type(v) for v in document_types.values()):
+            if any(not is_sequence_type(v, self) for v in document_types.values()):
                 raise ElementPathValueError('invalid sequence type in document_types argument')
         self.document_types = document_types
 
         if collection_types:
-            if any(not self.is_sequence_type(v) for v in collection_types.values()):
+            if any(not is_sequence_type(v, self) for v in collection_types.values()):
                 raise ElementPathValueError('invalid sequence type in collection_types argument')
         self.collection_types = collection_types
 
-        if not self.is_sequence_type(default_collection_type):
+        if not is_sequence_type(default_collection_type, self):
             raise ElementPathValueError('invalid sequence type for '
                                         'default_collection_type argument')
         self.default_collection_type = default_collection_type
@@ -265,23 +182,6 @@ class XPath2Parser(XPath1Parser):
         return state
 
     @property
-    def default_collation(self) -> str:
-        if self._default_collation is not None:
-            return self._default_collation
-
-        language_code, encoding = get_locale_category(locale.LC_COLLATE).split('.')
-        if language_code is None:
-            return UNICODE_CODEPOINT_COLLATION
-        elif encoding is None or not encoding:
-            return language_code
-        else:
-            collation = f'{language_code}.{encoding}'
-            if collation != 'en_US.UTF-8':
-                return collation
-            else:
-                return UNICODE_CODEPOINT_COLLATION
-
-    @property
     def xsd_version(self) -> str:
         if self.schema is None:
             return self._xsd_version
@@ -291,8 +191,8 @@ class XPath2Parser(XPath1Parser):
         except (AttributeError, NotImplementedError):
             return self._xsd_version
 
-    def advance(self, *symbols: str) -> XPathToken:
-        super(XPath2Parser, self).advance(*symbols)
+    def advance(self, *symbols: str,  message: Optional[str] = None) -> XPathToken:
+        super(XPath2Parser, self).advance(*symbols, message=message)
 
         if self.next_token.symbol == '(:':
             # Parses and consumes an XPath 2.0 comment. A comment is delimited
@@ -314,10 +214,10 @@ class XPath2Parser(XPath1Parser):
             self.next_token.unexpected(':')
             self.token = token
 
-        return self.next_token
+        return self.token
 
     @classmethod
-    def constructor(cls, symbol: str, bp: int = 0, nargs: NargsType = 1,
+    def constructor(cls, symbol: str, bp: int = 90, nargs: NargsType = 1,
                     sequence_types: Union[Tuple[()], Tuple[str, ...], List[str]] = (),
                     label: Union[str, Tuple[str, ...]] = 'constructor function') \
             -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -327,18 +227,22 @@ class XPath2Parser(XPath1Parser):
                 self.parser.advance('(')
                 self[0:] = self.parser.expression(5),
                 if self.parser.next_token.symbol == ',':
-                    raise self.wrong_nargs('Too many arguments: expected at most 1 argument')
+                    msg = 'Too many arguments: expected at most 1 argument'
+                    raise self.error('XPST0017', msg)
                 self.parser.advance(')')
                 self.value = None
             except SyntaxError:
                 raise self.error('XPST0017') from None
 
             if self[0].symbol == '?':
-                self._partial_function()
+                self.to_partial_function()
             return self
 
         def evaluate_(self: XPathConstructor, context: Optional[XPathContext] = None) \
                 -> Union[List[None], AtomicValueType]:
+            if self.context is not None:
+                context = self.context
+
             arg = self.data_value(self.get_argument(context))
             if arg is None:
                 return []
@@ -456,7 +360,7 @@ class XPath2Parser(XPath1Parser):
             except KeyError:
                 sequence_type = 'item()*' if isinstance(value, list) else 'item()'
 
-            if not self.match_sequence_type(value, sequence_type):
+            if not match_sequence_type(value, sequence_type, self):
                 message = "Unmatched sequence type for variable {!r}".format(varname)
                 raise xpath_error('XPDY0050', message)
 

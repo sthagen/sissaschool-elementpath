@@ -15,7 +15,6 @@ import math
 import datetime
 import time
 import re
-import locale
 import os.path
 import unicodedata
 from copy import copy
@@ -30,12 +29,13 @@ from ..datatypes import QNAME_PATTERN, DateTime10, DateTime, Date10, Date, \
     UntypedAtomic, AnyURI, QName, NCName, Id, ArithmeticProxy, NumericProxy
 from ..namespaces import XML_NAMESPACE, get_namespace, split_expanded_name, \
     XML_BASE, XML_ID, XML_LANG
-from ..etree import etree_deep_equal
+from ..compare import deep_equal
+from ..sequence_types import match_sequence_type
 from ..xpath_context import XPathSchemaContext
-from ..xpath_nodes import XPathNode, DocumentNode, ElementNode, AttributeNode, \
-    NamespaceNode, CommentNode, ProcessingInstructionNode
-from ..xpath_token import XPathFunction
+from ..xpath_nodes import XPathNode, DocumentNode, ElementNode
+from ..xpath_tokens import XPathFunction
 from ..regex import RegexError, translate_pattern
+from ..collations import CollationManager
 from ._xpath2_operators import XPath2Parser
 
 method = XPath2Parser.method
@@ -77,6 +77,9 @@ def nud_item_sequence_type(self):
 @method(function('prefix-from-QName', nargs=1,
                  sequence_types=('xs:QName?', 'xs:NCName?')))
 def evaluate_prefix_from_qname_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     qname = self.get_argument(context)
     if qname is None:
         return []
@@ -88,9 +91,12 @@ def evaluate_prefix_from_qname_function(self, context=None):
 @method(function('local-name-from-QName', nargs=1,
                  sequence_types=('xs:QName?', 'xs:NCName?')))
 def evaluate_local_name_from_qname_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     qname = self.get_argument(context)
     if qname is None:
-        return
+        return []
     elif not isinstance(qname, QName):
         if self.parser.version >= '3.0' and \
                 isinstance(self.data_value(qname), UntypedAtomic):
@@ -104,9 +110,12 @@ def evaluate_local_name_from_qname_function(self, context=None):
 @method(function('namespace-uri-from-QName', nargs=1,
                  sequence_types=('xs:QName?', 'xs:anyURI?')))
 def evaluate_uri_from_qname_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     qname = self.get_argument(context)
     if qname is None:
-        return
+        return []
     elif not isinstance(qname, QName):
         if self.parser.version >= '3.0' and \
                 isinstance(self.data_value(qname), UntypedAtomic):
@@ -120,7 +129,9 @@ def evaluate_uri_from_qname_function(self, context=None):
 @method(function('namespace-uri-for-prefix', nargs=2,
                  sequence_types=('xs:string?', 'element()', 'xs:anyURI?')))
 def evaluate_namespace_uri_for_prefix_function(self, context=None):
-    if context is None:
+    if self.context is not None:
+        context = self.context
+    elif context is None:
         raise self.missing_context()
 
     prefix = self.get_argument(context=copy(context))
@@ -142,11 +153,15 @@ def evaluate_namespace_uri_for_prefix_function(self, context=None):
                 else:
                     msg = 'Prefix %r is associated to no namespace'
                     raise self.error('XPST0081', msg % prefix)
+    else:
+        return []
 
 
 @method(function('in-scope-prefixes', nargs=1, sequence_types=('element()', 'xs:string*')))
 def select_in_scope_prefixes_function(self, context=None):
-    if context is None:
+    if self.context is not None:
+        context = self.context
+    elif context is None:
         raise self.missing_context()
 
     arg = self.get_argument(context, required=True)
@@ -179,9 +194,12 @@ def select_in_scope_prefixes_function(self, context=None):
 @method(function('resolve-QName', nargs=2,
                  sequence_types=('xs:string?', 'element()', 'xs:QName?')))
 def evaluate_resolve_qname_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     qname = self.get_argument(context=copy(context))
     if qname is None:
-        return
+        return []
     elif not isinstance(qname, str):
         raise self.error('FORG0006', '1st argument has an invalid type %r' % type(qname))
 
@@ -224,15 +242,18 @@ def evaluate_resolve_qname_function(self, context=None):
 # Accessor functions
 @method(function('node-name', nargs=1, sequence_types=('node()?', 'xs:QName?')))
 def evaluate_node_name_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     arg = self.get_argument(context)
     if arg is None:
-        return None
+        return []
     elif not isinstance(arg, XPathNode):
         raise self.error('XPTY0004', 'an XPath node required')
 
     name = arg.name
     if name is None:
-        return
+        return []
     elif name.startswith('{'):
         # name is a QName in extended format
         namespace, local_name = split_expanded_name(name)
@@ -247,9 +268,12 @@ def evaluate_node_name_function(self, context=None):
 
 @method(function('nilled', nargs=1, sequence_types=('node()?', 'xs:boolean?')))
 def evaluate_nilled_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     arg = self.get_argument(context)
     if arg is None:
-        return None
+        return []
     elif not isinstance(arg, XPathNode):
         raise self.error('XPTY0004', 'an XPath node required')
     return arg.nilled
@@ -257,21 +281,29 @@ def evaluate_nilled_function(self, context=None):
 
 @method(function('data', nargs=1, sequence_types=('item()*', 'xs:anyAtomicType*')))
 def select_data_function(self, context=None):
-    yield from self[0].atomization(context)
+    yield from self[0].atomization(self.context or context)
 
 
 @method(function('base-uri', nargs=(0, 1), sequence_types=('node()?', 'xs:anyURI?')))
 def evaluate_base_uri_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     item = self.get_argument(context, default_to_context=True)
     if context is None:
         raise self.missing_context("context item is undefined")
     elif item is None:
-        return None
+        return []
     elif not isinstance(item, XPathNode):
-        raise self.wrong_context_type("context item is not a node")
+        raise self.error('XPTY0004', "context item is not a node")
     elif isinstance(item, DocumentNode):
-        base_uri = item.document.getroot().get(XML_BASE)
-        return AnyURI(base_uri if base_uri is not None else '')
+        for e in item:
+            if isinstance(e, ElementNode):
+                base_uri = e.elem.get(XML_BASE)
+                if base_uri is not None:
+                    return AnyURI(base_uri)
+        else:
+            return AnyURI('')
     else:
         context.item = item
         base_uri = []
@@ -291,7 +323,9 @@ def evaluate_base_uri_function(self, context=None):
 
 @method(function('document-uri', nargs=1, sequence_types=('node()?', 'xs:anyURI?')))
 def evaluate_document_uri_function(self, context=None):
-    if context is None:
+    if self.context is not None:
+        context = self.context
+    elif context is None:
         raise self.missing_context()
 
     arg = self.get_argument(context)
@@ -305,17 +339,20 @@ def evaluate_document_uri_function(self, context=None):
                     if doc and doc.document is context.root.document:
                         return AnyURI(uri)
 
-    return None
+    return []
 
 
 ###
 # Number functions
 @method(function('round-half-to-even', nargs=(1, 2),
-                 sequence_types=('numeric?', 'xs:integer', 'numeric?')))
+                 sequence_types=('xs:numeric?', 'xs:integer', 'xs:numeric?')))
 def evaluate_round_half_to_even_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     item = self.get_argument(context)
     if item is None:
-        return
+        return []
     elif isinstance(item, float) and (math.isnan(item) or math.isinf(item)):
         return item
     elif not isinstance(item, (float, int, Decimal)):
@@ -339,11 +376,14 @@ def evaluate_round_half_to_even_function(self, context=None):
         return round(item, precision)
 
 
-@method(function('abs', nargs=1, sequence_types=('numeric?', 'numeric?')))
+@method(function('abs', nargs=1, sequence_types=('xs:numeric?', 'xs:numeric?')))
 def evaluate_abs_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     item = self.get_argument(context)
     if item is None:
-        return
+        return []
     elif isinstance(item, float) and math.isnan(item):
         return item
     elif isinstance(item, XPathNode):
@@ -362,6 +402,9 @@ def evaluate_abs_function(self, context=None):
 # Aggregate functions
 @method(function('avg', nargs=1, sequence_types=('xs:anyAtomicType*', 'xs:anyAtomicType')))
 def evaluate_avg_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     values = []
     for item in self[0].atomization(context):
         if isinstance(item, UntypedAtomic):
@@ -372,7 +415,7 @@ def evaluate_avg_function(self, context=None):
             values.append(item)
 
     if not values:
-        return
+        return []
     elif isinstance(values[0], Duration):
         value = values[0]
         try:
@@ -426,6 +469,9 @@ def evaluate_max_min_functions(self, context=None):
     to_any_uri = None
     aggregate_func = max if self.symbol == 'max' else min
 
+    if self.context is not None:
+        context = self.context
+
     for item in self[0].atomization(context):
         if isinstance(item, UntypedAtomic):
             values.append(self.cast_to_double(item))
@@ -448,13 +494,16 @@ def evaluate_max_min_functions(self, context=None):
             to_any_uri = False
             values.append(item)
 
-    try:
-        if len(self) > 1:
-            with self.use_locale(collation=self.get_argument(context, 1)):
-                return max_or_min()
-        return max_or_min()
-    except TypeError as err:
-        raise self.error('FORG0006', err)
+    if len(self) < 2:
+        collation = self.parser.default_collation
+    else:
+        collation = self.get_argument(context, 1, required=True, cls=str)
+
+    with CollationManager(collation, self):
+        try:
+            return max_or_min()
+        except TypeError as err:
+            raise self.error('FORG0006', err)
 
 
 ###
@@ -462,37 +511,40 @@ def evaluate_max_min_functions(self, context=None):
 @method(function('empty', nargs=1, sequence_types=('item()*', 'xs:boolean')))
 @method(function('exists', nargs=1, sequence_types=('item()*', 'xs:boolean')))
 def evaluate_empty_and_exists_functions(self, context=None):
-    return next(iter(self.select(context)))
+    return next(iter(self.select(self.context or context)))
 
 
 @method('empty')
 def select_empty_function(self, context=None):
     try:
-        next(iter(self[0].select(context)))
+        value = next(iter(self[0].select(self.context or context)))
     except StopIteration:
         yield True
     else:
-        yield False
+        yield not value and isinstance(value, list)
 
 
 @method('exists')
 def select_exists_function(self, context=None):
     try:
-        next(iter(self[0].select(context)))
+        value = next(iter(self[0].select(self.context or context)))
     except StopIteration:
         yield False
     else:
-        yield True
+        yield not (not value and isinstance(value, list))
 
 
 @method(function('distinct-values', nargs=(1, 2),
                  sequence_types=('xs:anyAtomicType*', 'xs:string', 'xs:anyAtomicType*')))
 def select_distinct_values_function(self, context=None):
 
-    def distinct_values():
+    def distinct_values(case_insensitive=False):
         nan = False
         results = []
         for value in self[0].atomization(context):
+            if case_insensitive and isinstance(value, (str, bytes)):
+                value = value.casefold()
+
             if isinstance(value, (float, Decimal)):
                 if math.isnan(value):
                     if not nan:
@@ -507,16 +559,21 @@ def select_distinct_values_function(self, context=None):
                 yield value
                 results.append(value)
 
-    if len(self) > 1:
-        with self.use_locale(collation=self.get_argument(context, 1)):
-            yield from distinct_values()
+    if len(self) < 2:
+        collation = self.parser.default_collation
     else:
+        collation = self.get_argument(self.context or context, 1, required=True, cls=str)
+
+    with CollationManager(collation, self):
         yield from distinct_values()
 
 
 @method(function('insert-before', nargs=3,
                  sequence_types=('item()*', 'xs:integer', 'item()*', 'item()*')))
 def select_insert_before_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     position = self.get_argument(context, 1, required=True, cls=int)
     insert_at_pos = max(0, position - 1)
 
@@ -534,23 +591,29 @@ def select_insert_before_function(self, context=None):
 @method(function('index-of', nargs=(2, 3), sequence_types=(
         'xs:anyAtomicType*', 'xs:anyAtomicType', 'xs:string', 'xs:integer*')))
 def select_index_of_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     value = self[1].get_atomized_operand(copy(context))
     if value is None:
         raise self.error('XPTY0004', "2nd argument cannot be an empty sequence")
 
     if len(self) < 3:
-        for pos, result in enumerate(self[0].atomization(context), start=1):
-            if result == value:
-                yield pos
+        collation = self.parser.default_collation
     else:
-        with self.use_locale(collation=self.get_argument(context, 2)):
-            for pos, result in enumerate(self[0].atomization(context), start=1):
-                if result == value:
-                    yield pos
+        collation = self.get_argument(context, 2, required=True, cls=str)
+
+    with CollationManager(collation, self) as manager:
+        for pos, result in enumerate(self[0].atomization(context), start=1):
+            if manager.eq(result, value):
+                yield pos
 
 
 @method(function('remove', nargs=2, sequence_types=('item()*', 'xs:integer', 'item()*')))
 def select_remove_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     position = self.get_argument(context, 1)
     if not isinstance(position, int):
         raise self.error('XPTY0004', 'an xs:integer required')
@@ -562,12 +625,15 @@ def select_remove_function(self, context=None):
 
 @method(function('reverse', nargs=1, sequence_types=('item()*', 'item()*')))
 def select_reverse_function(self, context=None):
-    yield from reversed([x for x in self[0].select(context)])
+    yield from reversed([x for x in self[0].select(self.context or context)])
 
 
 @method(function('subsequence', nargs=(2, 3),
                  sequence_types=('item()*', 'xs:double', 'xs:double', 'item()*')))
 def select_subsequence_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     starting_loc = self.get_argument(context, 1, cls=NumericProxy)
     if not math.isnan(starting_loc) and not math.isinf(starting_loc):
         starting_loc = float(round_number(starting_loc))
@@ -588,6 +654,9 @@ def select_subsequence_function(self, context=None):
 
 @method(function('unordered', nargs=1, sequence_types=('item()*', 'item()*')))
 def select_unordered_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     yield from sorted([x for x in self[0].select(context)], key=lambda x: self.string_value(x))
 
 
@@ -595,7 +664,7 @@ def select_unordered_function(self, context=None):
 # Cardinality functions for sequences
 @method(function('zero-or-one', nargs=1, sequence_types=('item()*', 'item()?')))
 def select_zero_or_one_function(self, context=None):
-    results = iter(self[0].select(context))
+    results = iter(self[0].select(self.context or context))
     try:
         item = next(results)
     except StopIteration:
@@ -611,7 +680,7 @@ def select_zero_or_one_function(self, context=None):
 
 @method(function('one-or-more', nargs=1, sequence_types=('item()*', 'item()+')))
 def select_one_or_more_function(self, context=None):
-    results = iter(self[0].select(context))
+    results = iter(self[0].select(self.context or context))
     try:
         item = next(results)
     except StopIteration:
@@ -646,94 +715,19 @@ def select_exactly_one_function(self, context=None):
 @method(function('deep-equal', nargs=(2, 3),
                  sequence_types=('item()*', 'item()*', 'xs:string', 'xs:boolean')))
 def evaluate_deep_equal_function(self, context=None):
+    if self.context is not None:
+        context = self.context
 
-    def deep_equal():
-        while True:
-            value1 = next(seq1, None)
-            value2 = next(seq2, None)
-            if isinstance(value1, XPathFunction) or isinstance(value2, XPathFunction):
-                raise self.error('FOTY0015')
-
-            if (value1 is None) ^ (value2 is None):
-                return False
-            elif value1 is None:
-                return True
-            elif isinstance(value1, XPathNode) ^ isinstance(value2, XPathNode):
-                return False
-            elif not isinstance(value1, XPathNode):
-                try:
-                    if isinstance(value1, bool):
-                        if not isinstance(value2, bool) or value1 is not value2:
-                            return False
-
-                    elif isinstance(value2, bool):
-                        return False
-
-                    elif isinstance(value1, UntypedAtomic):
-                        if not isinstance(value2, UntypedAtomic) or value1 != value2:
-                            return False
-
-                    elif isinstance(value2, UntypedAtomic):
-                        return False
-
-                    elif isinstance(value1, float):
-                        if math.isnan(value1):
-                            if not math.isnan(value2):
-                                return False
-                        elif math.isinf(value1):
-                            if value1 != value2:
-                                return False
-                        elif isinstance(value2, Decimal):
-                            if value1 != float(value2):
-                                return False
-                        elif not isinstance(value2, (value1.__class__, int)):
-                            return False
-                        elif value1 != value2:
-                            return False
-
-                    elif isinstance(value2, float):
-                        if math.isnan(value2):
-                            return False
-                        elif math.isinf(value2):
-                            if value1 != value2:
-                                return False
-                        elif isinstance(value1, Decimal):
-                            if value2 != float(value1):
-                                return False
-                        elif not isinstance(value1, (value2.__class__, int)):
-                            return False
-                        elif value1 != value2:
-                            return False
-
-                    elif value1 != value2:
-                        return False
-                except TypeError:
-                    return False
-            elif value1.kind != value2.kind:
-                return False
-            elif isinstance(value1, (ElementNode, CommentNode, ProcessingInstructionNode)):
-                if not etree_deep_equal(value1.elem, value2.elem):
-                    return False
-            elif isinstance(value1, DocumentNode):
-                if not etree_deep_equal(value1.document.getroot(), value2.document.getroot()):
-                    return False
-            elif value1.value != value2.value:
-                return False
-            elif isinstance(value1, AttributeNode):
-                if value1.name != value2.name:
-                    return False
-            elif isinstance(value1, NamespaceNode):
-                if value1.prefix != value2.prefix:
-                    return False
-
-    seq1 = iter(self[0].select(copy(context)))
-    seq2 = iter(self[1].select(copy(context)))
-
-    if len(self) > 2:
-        with self.use_locale(collation=self.get_argument(context, 2)):
-            return deep_equal()
+    if len(self) < 3:
+        collation = self.parser.default_collation
     else:
-        return deep_equal()
+        collation = self.get_argument(context, 2, required=True, cls=str)
+
+    return deep_equal(
+        seq1=self[0].select(copy(context)),
+        seq2=self[1].select(copy(context)),
+        collation=collation,
+    )
 
 
 ###
@@ -741,6 +735,9 @@ def evaluate_deep_equal_function(self, context=None):
 @method(function('matches', nargs=(2, 3),
                  sequence_types=('xs:string?', 'xs:string', 'xs:string', 'xs:boolean')))
 def evaluate_matches_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     input_string = self.get_argument(context, default='', cls=str)
     pattern = self.get_argument(context, 1, required=True, cls=str)
     flags = 0
@@ -763,12 +760,15 @@ def evaluate_matches_function(self, context=None):
         raise self.error('FORX0002', err) from None
 
 
-REPLACEMENT_PATTERN = re.compile(r'^([^\\$]|[\\]{2}|\\\$|\$\d+)*$')
+REPLACEMENT_PATTERN = re.compile(r'^([^\\$]|\\{2}|\\\$|\$\d+)*$')
 
 
 @method(function('replace', nargs=(3, 4), sequence_types=(
         'xs:string?', 'xs:string', 'xs:string', 'xs:string', 'xs:string')))
 def evaluate_replace_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     input_string = self.get_argument(context, default='', cls=str)
     pattern = self.get_argument(context, 1, required=True, cls=str)
     replacement = self.get_argument(context, 2, required=True, cls=str)
@@ -809,11 +809,21 @@ def evaluate_replace_function(self, context=None):
             return pattern.sub(replacement, input_string).replace('\\$', '$')
 
 
-@method(function('tokenize', nargs=(2, 3),
+@method(function('tokenize', nargs=(1, 3),
                  sequence_types=('xs:string?', 'xs:string', 'xs:string', 'xs:string*')))
-def select_tokenize_function(self, context=None):
+def evaluate_tokenize_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     input_string = self.get_argument(context, cls=str)
-    pattern = self.get_argument(context, 1, required=True, cls=str)
+    if input_string is None:
+        return []
+    elif self.parser.version >= '3.1' and len(self) == 1:
+        pattern = ' '
+        input_string = ' '.join(re.split('[ \t\n\r\f\v]+', input_string.strip(' \t\n\r\f\v')))
+    else:
+        pattern = self.get_argument(context, 1, required=True, cls=str)
+
     flags = 0
     if len(self) > 2:
         for c in self.get_argument(context, 2, required=True, cls=str):
@@ -834,10 +844,16 @@ def select_tokenize_function(self, context=None):
             msg = "Regular expression %r matches zero-length string"
             raise self.error('FORX0003', msg % pattern.pattern)
 
+    result = []
     if input_string:
         for value in pattern.split(input_string):
             if value is not None and pattern.search(value) is None:
-                yield value
+                result.append(value)
+
+        if len(result) == 1:
+            return result[0]
+
+    return result
 
 
 ###
@@ -845,12 +861,15 @@ def select_tokenize_function(self, context=None):
 @method(function('resolve-uri', nargs=(1, 2),
                  sequence_types=('xs:string?', 'xs:string', 'xs:anyURI?')))
 def evaluate_resolve_uri_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     relative = self.get_argument(context, cls=str)
     if len(self) == 1:
         if self.parser.base_uri is None:
             raise self.error('FONS0005')
         elif relative is None:
-            return
+            return []
         elif not AnyURI.is_valid(relative):
             raise self.error('FORG0002', '{!r} is not a valid URI'.format(relative))
         else:
@@ -860,7 +879,7 @@ def evaluate_resolve_uri_function(self, context=None):
     if not AnyURI.is_valid(base_uri):
         raise self.error('FORG0002', '{!r} is not a valid URI'.format(base_uri))
     elif relative is None:
-        return
+        return []
     elif not AnyURI.is_valid(relative):
         raise self.error('FORG0002', '{!r} is not a valid URI'.format(relative))
     else:
@@ -873,6 +892,9 @@ def evaluate_resolve_uri_function(self, context=None):
 @method(function('codepoints-to-string', nargs=1,
                  sequence_types=('xs:integer*', 'xs:string')))
 def evaluate_codepoints_to_string_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     result = []
     for value in self[0].select(context):
         if isinstance(value, UntypedAtomic):
@@ -895,23 +917,28 @@ def evaluate_codepoints_to_string_function(self, context=None):
 @method(function('string-to-codepoints', nargs=1,
                  sequence_types=('xs:string?', 'xs:integer*')))
 def evaluate_string_to_codepoints_function(self, context=None):
-    arg = self.get_argument(context, cls=str)
-    return [ord(c) for c in arg] if arg else None
+    arg = self.get_argument(self.context or context, cls=str)
+    return [ord(c) for c in arg] if arg else []
 
 
 @method(function('compare', nargs=(2, 3),
                  sequence_types=('xs:string?', 'xs:string?', 'xs:string', 'xs:integer?')))
 def evaluate_compare_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     comp1 = self.get_argument(context, 0, cls=str, promote=(AnyURI, UntypedAtomic))
     comp2 = self.get_argument(context, 1, cls=str, promote=(AnyURI, UntypedAtomic))
     if comp1 is None or comp2 is None:
-        return None
+        return []
 
     if len(self) < 3:
-        value = locale.strcoll(comp1, comp2)
+        collation = self.parser.default_collation
     else:
-        with self.use_locale(collation=self.get_argument(context, 2)):
-            value = locale.strcoll(comp1, comp2)
+        collation = self.get_argument(context, 2, required=True)
+
+    with CollationManager(collation, self) as manager:
+        value = manager.strcoll(comp1, comp2)
 
     return 0 if not value else 1 if value > 0 else -1
 
@@ -919,23 +946,31 @@ def evaluate_compare_function(self, context=None):
 @method(function('contains', nargs=(2, 3),
                  sequence_types=('xs:string?', 'xs:string?', 'xs:string', 'xs:boolean')))
 def evaluate_contains_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     arg1 = self.get_argument(context, default='', cls=str)
     arg2 = self.get_argument(context, index=1, default='', cls=str)
 
     if len(self) < 3:
-        return arg2 in arg1
+        collation = self.parser.default_collation
     else:
-        with self.use_locale(collation=self.get_argument(context, 2)):
-            return arg2 in arg1
+        collation = self.get_argument(context, 2, required=True, cls=str)
+
+    with CollationManager(collation, self) as manager:
+        return manager.contains(arg1, arg2)
 
 
 @method(function('codepoint-equal', nargs=2,
                  sequence_types=('xs:string?', 'xs:string?', 'xs:boolean?')))
 def evaluate_codepoint_equal_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     comp1 = self.get_argument(context, 0, cls=str)
     comp2 = self.get_argument(context, 1, cls=str)
     if comp1 is None or comp2 is None:
-        return
+        return []
     elif len(comp1) != len(comp2):
         return False
     else:
@@ -945,9 +980,12 @@ def evaluate_codepoint_equal_function(self, context=None):
 @method(function('string-join', nargs=2,
                  sequence_types=('xs:string*', 'xs:string', 'xs:string')))
 def evaluate_string_join_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     items = [
-        self.validated_value(s, cls=str, promote=AnyURI)
-        for s in self[0].atomization(context)
+        self.validated_value(s, cls=str, promote=AnyURI, index=k)
+        for k, s in enumerate(self[0].atomization(context))
     ]
     return self.get_argument(context, 1, required=True, cls=str).join(items)
 
@@ -955,6 +993,9 @@ def evaluate_string_join_function(self, context=None):
 @method(function('normalize-unicode', nargs=(1, 2),
                  sequence_types=('xs:string?', 'xs:string', 'xs:string')))
 def evaluate_normalize_unicode_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     arg = self.get_argument(context, default='', cls=str)
     if len(self) > 1:
         normalization_form = self.get_argument(context, 1, cls=str)
@@ -982,29 +1023,29 @@ def evaluate_normalize_unicode_function(self, context=None):
 
 @method(function('upper-case', nargs=1, sequence_types=('xs:string?', 'xs:string')))
 def evaluate_upper_case_function(self, context=None):
-    return self.get_argument(context, default='', cls=str).upper()
+    return self.get_argument(self.context or context, default='', cls=str).upper()
 
 
 @method(function('lower-case', nargs=1, sequence_types=('xs:string?', 'xs:string')))
 def evaluate_lower_case_function(self, context=None):
-    return self.get_argument(context, default='', cls=str).lower()
+    return self.get_argument(self.context or context, default='', cls=str).lower()
 
 
 @method(function('encode-for-uri', nargs=1, sequence_types=('xs:string?', 'xs:string')))
 def evaluate_encode_for_uri_function(self, context=None):
-    uri_part = self.get_argument(context, cls=str)
+    uri_part = self.get_argument(self.context or context, cls=str)
     return '' if uri_part is None else urllib_quote(uri_part, safe='~')
 
 
 @method(function('iri-to-uri', nargs=1, sequence_types=('xs:string?', 'xs:string')))
 def evaluate_iri_to_uri_function(self, context=None):
-    iri = self.get_argument(context, cls=str, promote=AnyURI)
+    iri = self.get_argument(self.context or context, cls=str, promote=AnyURI)
     return '' if iri is None else urllib_quote(iri, safe='-_.!~*\'()#;/?:@&=+$,[]%')
 
 
 @method(function('escape-html-uri', nargs=1, sequence_types=('xs:string?', 'xs:string')))
 def evaluate_escape_html_uri_function(self, context=None):
-    uri = self.get_argument(context, cls=str)
+    uri = self.get_argument(self.context or context, cls=str)
     if uri is None:
         return ''
     return urllib_quote(uri, safe=''.join(chr(cp) for cp in range(32, 127)))
@@ -1013,27 +1054,37 @@ def evaluate_escape_html_uri_function(self, context=None):
 @method(function('starts-with', nargs=(2, 3),
                  sequence_types=('xs:string?', 'xs:string?', 'xs:string', 'xs:boolean')))
 def evaluate_starts_with_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     arg1 = self.get_argument(context, default='', cls=str)
     arg2 = self.get_argument(context, index=1, default='', cls=str)
 
     if len(self) < 3:
-        return arg1.startswith(arg2)
+        collation = self.parser.default_collation
     else:
-        with self.use_locale(collation=self.get_argument(context, 2)):
-            return arg1.startswith(arg2)
+        collation = self.get_argument(context, 2, required=True, cls=str)
+
+    with CollationManager(collation, self) as manager:
+        return manager.startswith(arg1, arg2)
 
 
 @method(function('ends-with', nargs=(2, 3),
                  sequence_types=('xs:string?', 'xs:string?', 'xs:string', 'xs:boolean')))
 def evaluate_ends_with_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     arg1 = self.get_argument(context, default='', cls=str)
     arg2 = self.get_argument(context, index=1, default='', cls=str)
 
     if len(self) < 3:
-        return arg1.endswith(arg2)
+        collation = self.parser.default_collation
     else:
-        with self.use_locale(collation=self.get_argument(context, 2)):
-            return arg1.endswith(arg2)
+        collation = self.get_argument(context, 2, required=True, cls=str)
+
+    with CollationManager(collation, self) as manager:
+        return manager.endswith(arg1, arg2)
 
 
 @method(function('substring-before', nargs=(2, 3),
@@ -1041,14 +1092,19 @@ def evaluate_ends_with_function(self, context=None):
 @method(function('substring-after', nargs=(2, 3),
                  sequence_types=('xs:string?', 'xs:string?', 'xs:string', 'xs:string')))
 def evaluate_substring_functions(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     arg1 = self.get_argument(context, default='', cls=str)
     arg2 = self.get_argument(context, index=1, default='', cls=str)
 
     if len(self) < 3:
-        index = arg1.find(arg2)
+        collation = self.parser.default_collation
     else:
-        with self.use_locale(collation=self.get_argument(context, 2)):
-            index = arg1.find(arg2)
+        collation = self.get_argument(context, 2, required=True, cls=str)
+
+    with CollationManager(collation, self) as manager:
+        index = manager.find(arg1, arg2)
 
     if index < 0:
         return ''
@@ -1063,9 +1119,9 @@ def evaluate_substring_functions(self, context=None):
 @method(function('years-from-duration', nargs=1,
                  sequence_types=('xs:duration?', 'xs:integer?')))
 def evaluate_years_from_duration_function(self, context=None):
-    item = self.get_argument(context, cls=Duration)
+    item = self.get_argument(self.context or context, cls=Duration)
     if item is None:
-        return None
+        return []
     elif item.months >= 0:
         return item.months // 12
     else:
@@ -1075,9 +1131,9 @@ def evaluate_years_from_duration_function(self, context=None):
 @method(function('months-from-duration', nargs=1,
                  sequence_types=('xs:duration?', 'xs:integer?')))
 def evaluate_months_from_duration_function(self, context=None):
-    item = self.get_argument(context, cls=Duration)
+    item = self.get_argument(self.context or context, cls=Duration)
     if item is None:
-        return None
+        return []
     elif item.months >= 0:
         return item.months % 12
     else:
@@ -1087,9 +1143,9 @@ def evaluate_months_from_duration_function(self, context=None):
 @method(function('days-from-duration', nargs=1,
                  sequence_types=('xs:duration?', 'xs:integer?')))
 def evaluate_days_from_duration_function(self, context=None):
-    item = self.get_argument(context, cls=Duration)
+    item = self.get_argument(self.context or context, cls=Duration)
     if item is None:
-        return None
+        return []
     elif item.seconds >= 0:
         return int(item.seconds // 86400)
     else:
@@ -1099,9 +1155,9 @@ def evaluate_days_from_duration_function(self, context=None):
 @method(function('hours-from-duration', nargs=1,
                  sequence_types=('xs:duration?', 'xs:integer?')))
 def evaluate_hours_from_duration_function(self, context=None):
-    item = self.get_argument(context, cls=Duration)
+    item = self.get_argument(self.context or context, cls=Duration)
     if item is None:
-        return None
+        return []
     elif item.seconds >= 0:
         return int(item.seconds // 3600 % 24)
     else:
@@ -1111,9 +1167,9 @@ def evaluate_hours_from_duration_function(self, context=None):
 @method(function('minutes-from-duration', nargs=1,
                  sequence_types=('xs:duration?', 'xs:integer?')))
 def evaluate_minutes_from_duration_function(self, context=None):
-    item = self.get_argument(context, cls=Duration)
+    item = self.get_argument(self.context or context, cls=Duration)
     if item is None:
-        return None
+        return []
     elif item.seconds >= 0:
         return int(item.seconds // 60 % 60)
     else:
@@ -1123,9 +1179,9 @@ def evaluate_minutes_from_duration_function(self, context=None):
 @method(function('seconds-from-duration', nargs=1,
                  sequence_types=('xs:duration?', 'xs:decimal?')))
 def evaluate_seconds_from_duration_function(self, context=None):
-    item = self.get_argument(context, cls=Duration)
+    item = self.get_argument(self.context or context, cls=Duration)
     if item is None:
-        return None
+        return []
     elif item.seconds >= 0:
         return item.seconds % 60
     else:
@@ -1140,9 +1196,9 @@ def evaluate_seconds_from_duration_function(self, context=None):
 @method(function('seconds-from-dateTime', nargs=1, sequence_types=('xs:dateTime?', 'xs:decimal?')))
 def evaluate_from_datetime_functions(self, context=None):
     cls = DateTime if self.parser.xsd_version == '1.1' else DateTime10
-    item = self.get_argument(context, cls=cls)
+    item = self.get_argument(self.context or context, cls=cls)
     if item is None:
-        return
+        return []
     elif self.symbol.startswith('year'):
         return item.year
     elif self.symbol.startswith('month'):
@@ -1163,9 +1219,9 @@ def evaluate_from_datetime_functions(self, context=None):
                  sequence_types=('xs:dateTime?', 'xs:dayTimeDuration?')))
 def evaluate_timezone_from_datetime_function(self, context=None):
     cls = DateTime if self.parser.xsd_version == '1.1' else DateTime10
-    item = self.get_argument(context, cls=cls)
+    item = self.get_argument(self.context or context, cls=cls)
     if item is None or item.tzinfo is None:
-        return
+        return []
     return DayTimeDuration(seconds=item.tzinfo.offset.total_seconds())
 
 
@@ -1176,9 +1232,9 @@ def evaluate_timezone_from_datetime_function(self, context=None):
                  sequence_types=('xs:date?', 'xs:dayTimeDuration?')))
 def evaluate_from_date_functions(self, context=None):
     cls = Date if self.parser.xsd_version == '1.1' else Date10
-    item = self.get_argument(context, cls=cls)
+    item = self.get_argument(self.context or context, cls=cls)
     if item is None:
-        return
+        return []
     elif self.symbol.startswith('year'):
         return item.year
     elif self.symbol.startswith('month'):
@@ -1186,34 +1242,34 @@ def evaluate_from_date_functions(self, context=None):
     elif self.symbol.startswith('day'):
         return item.day
     elif item.tzinfo is None:
-        return
+        return []
     return DayTimeDuration(seconds=item.tzinfo.offset.total_seconds())
 
 
 @method(function('hours-from-time', nargs=1, sequence_types=('xs:time?', 'xs:integer?')))
 def evaluate_hours_from_time_function(self, context=None):
-    item = self.get_argument(context, cls=Time)
-    return None if item is None else item.hour
+    item = self.get_argument(self.context or context, cls=Time)
+    return [] if item is None else item.hour
 
 
 @method(function('minutes-from-time', nargs=1, sequence_types=('xs:time?', 'xs:integer?')))
 def evaluate_minutes_from_time_function(self, context=None):
-    item = self.get_argument(context, cls=Time)
-    return None if item is None else item.minute
+    item = self.get_argument(self.context or context, cls=Time)
+    return [] if item is None else item.minute
 
 
 @method(function('seconds-from-time', nargs=1, sequence_types=('xs:time?', 'xs:decimal?')))
 def evaluate_seconds_from_time_function(self, context=None):
-    item = self.get_argument(context, cls=Time)
-    return None if item is None else item.second + item.microsecond / Decimal('1000000.0')
+    item = self.get_argument(self.context or context, cls=Time)
+    return [] if item is None else item.second + item.microsecond / Decimal('1000000.0')
 
 
 @method(function('timezone-from-time', nargs=1,
                  sequence_types=('xs:time?', 'xs:dayTimeDuration?')))
 def evaluate_timezone_from_time_function(self, context=None):
-    item = self.get_argument(context, cls=Time)
+    item = self.get_argument(self.context or context, cls=Time)
     if item is None or item.tzinfo is None:
-        return
+        return []
     return DayTimeDuration(seconds=item.tzinfo.offset.total_seconds())
 
 
@@ -1223,20 +1279,20 @@ def evaluate_timezone_from_time_function(self, context=None):
                  sequence_types=('xs:dateTime?', 'xs:dayTimeDuration?', 'xs:dateTime?')))
 def evaluate_adjust_datetime_to_timezone_function(self, context=None):
     cls = DateTime if self.parser.xsd_version == '1.1' else DateTime10
-    return self.adjust_datetime(context, cls)
+    return self.adjust_datetime(self.context or context, cls)
 
 
 @method(function('adjust-date-to-timezone', nargs=(1, 2),
                  sequence_types=('xs:date?', 'xs:dayTimeDuration?', 'xs:date?')))
 def evaluate_adjust_date_to_timezone_function(self, context=None):
     cls = Date if self.parser.xsd_version == '1.1' else Date10
-    return self.adjust_datetime(context, cls)
+    return self.adjust_datetime(self.context or context, cls)
 
 
 @method(function('adjust-time-to-timezone', nargs=(1, 2),
                  sequence_types=('xs:time?', 'xs:dayTimeDuration?', 'xs:time?')))
 def evaluate_adjust_time_to_timezone_function(self, context=None):
-    return self.adjust_datetime(context, Time)
+    return self.adjust_datetime(self.context or context, Time)
 
 
 ###
@@ -1249,7 +1305,7 @@ def evaluate_default_collation_function(self, context=None):
 @method(function('static-base-uri', nargs=0, sequence_types=('xs:anyURI?',)))
 def evaluate_static_base_uri_function(self, context=None):
     if self.parser.base_uri is None:
-        return None
+        return []
     return AnyURI(self.parser.base_uri)
 
 
@@ -1257,6 +1313,9 @@ def evaluate_static_base_uri_function(self, context=None):
 # Dynamic context functions
 @method(function('current-dateTime', nargs=0, sequence_types=('xs:dateTime',)))
 def evaluate_current_datetime_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     dt = datetime.datetime.now() if context is None else context.current_dt
     if self.parser.xsd_version == '1.1':
         return DateTime(dt.year, dt.month, dt.day, dt.hour, dt.minute,
@@ -1267,6 +1326,9 @@ def evaluate_current_datetime_function(self, context=None):
 
 @method(function('current-date', nargs=0, sequence_types=('xs:date',)))
 def evaluate_current_date_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     dt = datetime.datetime.now() if context is None else context.current_dt
     if self.parser.xsd_version == '1.1':
         return Date(dt.year, dt.month, dt.day, tzinfo=dt.tzinfo)
@@ -1275,12 +1337,18 @@ def evaluate_current_date_function(self, context=None):
 
 @method(function('current-time', nargs=0, sequence_types=('xs:time',)))
 def evaluate_current_time_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     dt = datetime.datetime.now() if context is None else context.current_dt
     return Time(dt.hour, dt.minute, dt.second, dt.microsecond, dt.tzinfo)
 
 
 @method(function('implicit-timezone', nargs=0, sequence_types=('xs:dayTimeDuration',)))
 def evaluate_implicit_timezone_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     if context is not None and context.timezone is not None:
         return DayTimeDuration.fromtimedelta(context.timezone.offset)
     else:
@@ -1291,28 +1359,39 @@ def evaluate_implicit_timezone_function(self, context=None):
 # The root function (Ref: https://www.w3.org/TR/2010/REC-xpath-functions-20101214/#func-root)
 @method(function('root', nargs=(0, 1), sequence_types=('node()?', 'node()?')))
 def evaluate_root_function(self, context=None):
-    if context is None:
+    if self.context is not None:
+        context = self.context
+    elif context is None:
         raise self.missing_context()
-    elif isinstance(context, XPathSchemaContext):
-        return None
+
+    if isinstance(context, XPathSchemaContext):
+        return []
     elif not self:
         if context.item is None:
             return context.root
         elif not isinstance(context.item, XPathNode):
             raise self.error('XPTY0004')
-        return context.get_root(context.item)
+
+        root = context.get_root(context.item)
+        return root if root is not None else []
+
     else:
         item = self.get_argument(context)
         if item is None:
-            return None
+            return []
         elif not isinstance(item, XPathNode):
             raise self.error('XPTY0004')
-        return context.get_root(item)
+
+        root = context.get_root(item)
+        return root if root is not None else []
 
 
 @method(function('lang', nargs=(1, 2),
                  sequence_types=('xs:string?', 'node()', 'xs:boolean')))
 def evaluate_lang_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     if len(self) > 1:
         item = self.get_argument(context, index=1, default_to_context=True)
     elif context is None:
@@ -1355,6 +1434,9 @@ def evaluate_lang_function(self, context=None):
 @method(function('id', nargs=(1, 2),
                  sequence_types=('xs:string*', 'node()', 'element()*')))
 def select_id_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     idrefs = {x for item in self[0].select(copy(context))
               for x in self.string_value(item).split() if Id.is_valid(x)}
 
@@ -1372,11 +1454,12 @@ def select_id_function(self, context=None):
         raise self.error('XPTY0004')
 
     if isinstance(context, XPathSchemaContext):
-        return None
+        return
 
+    assert context is not None
     root = context.get_root(node)
     if root is None:
-        return None
+        return
 
     # TODO: PSVI bindings with also xsi:type evaluation
     for element in filter(lambda x: isinstance(x, ElementNode), root.iter_descendants()):
@@ -1421,6 +1504,9 @@ def select_id_function(self, context=None):
 @method(function('idref', nargs=(1, 2), sequence_types=('xs:string*', 'node()', 'node()*')))
 def select_idref_function(self, context=None):
     # TODO: PSVI bindings with also xsi:type evaluation
+    if self.context is not None:
+        context = self.context
+
     ids = [x for x in self[0].select(context=copy(context))]
     node = self.get_argument(context, index=1, default_to_context=True)
 
@@ -1433,28 +1519,30 @@ def select_idref_function(self, context=None):
 
     if not isinstance(node, XPathNode):
         raise self.error('XPTY0004')
-    elif not isinstance(node, (ElementNode, DocumentNode)):
-        return
-
-    for element in filter(lambda x: isinstance(x, ElementNode), node.iter_descendants()):
-        text = element.elem.text
-        if text and is_idrefs(text) and any(v in text.split() for x in ids for v in x.split()):
-            yield element
-            continue
-
-        for attr in element.attributes:  # pragma: no cover
-            if attr.name != XML_ID and \
-                    any(v in attr.value.split() for x in ids for v in x.split()):
+    elif isinstance(node, (ElementNode, DocumentNode)):
+        for element in filter(lambda x: isinstance(x, ElementNode), node.iter_descendants()):
+            text = element.elem.text
+            if text and is_idrefs(text) and \
+                    any(v in text.split() for x in ids for v in x.split()):
                 yield element
-                break
+                continue
+
+            for attr in element.attributes:  # pragma: no cover
+                if attr.name != XML_ID and \
+                        any(v in attr.value.split() for x in ids for v in x.split()):
+                    yield element
+                    break
 
 
 @method(function('doc', nargs=1, sequence_types=('xs:string?', 'document-node()?')))
 @method(function('doc-available', nargs=1, sequence_types=('xs:string?', 'xs:boolean')))
 def evaluate_doc_functions(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     uri = self.get_argument(context)
     if uri is None:
-        return None if self.symbol == 'doc' else False
+        return [] if self.symbol == 'doc' else False
     elif isinstance(uri, str):
         pass
     elif isinstance(uri, AnyURI):
@@ -1467,11 +1555,13 @@ def evaluate_doc_functions(self, context=None):
     if context is None:
         raise self.missing_context()
     elif isinstance(context, XPathSchemaContext):
-        return None
+        return [] if self.symbol == 'doc' else False
 
     uri = uri.strip()
     if uri.startswith(':'):
-        raise self.error('FODC0005')
+        if self.symbol == 'doc' or self.parser.version <= '3.0':
+            raise self.error('FODC0005')
+        return False
 
     try:
         uri = self.get_absolute_uri(uri)
@@ -1497,20 +1587,23 @@ def evaluate_doc_functions(self, context=None):
     except (KeyError, TypeError):
         sequence_type = 'document-node()'
 
-    if not self.parser.match_sequence_type(doc, sequence_type):
-        msg = "Type does not match sequence type {!r}"
-        raise self.wrong_sequence_type(msg.format(sequence_type))
+    if not match_sequence_type(doc, sequence_type, self.parser):
+        msg = f"Type does not match sequence type {sequence_type!r}"
+        raise self.error('XPDY0050', msg)
 
     return doc if self.symbol == 'doc' else True
 
 
 @method(function('collection', nargs=(0, 1), sequence_types=('xs:string?', 'node()*')))
 def evaluate_collection_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     uri = self.get_argument(context)
     if context is None:
         raise self.missing_context()
     elif isinstance(context, XPathSchemaContext):
-        return
+        return []
     elif not self or uri is None:
         if context.default_collection is None:
             raise self.error('FODC0002', 'no default collection has been defined')
@@ -1531,9 +1624,9 @@ def evaluate_collection_function(self, context=None):
         except (KeyError, TypeError):
             return collection
 
-    if not self.parser.match_sequence_type(collection, sequence_type):
-        msg = "Type does not match sequence type {!r}"
-        raise self.wrong_sequence_type(msg.format(sequence_type))
+    if not match_sequence_type(collection, sequence_type, self.parser):
+        msg = f"Type does not match sequence type {sequence_type!r}"
+        raise self.error('XPDY0050', msg)
 
     return collection
 
@@ -1547,6 +1640,9 @@ def evaluate_collection_function(self, context=None):
 @method(function('error', nargs=(0, 3),
                  sequence_types=('xs:QName?', 'xs:string', 'item()*', 'none')))
 def evaluate_error_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     if not self:
         raise self.error('FOER0000')
     elif len(self) == 1:
@@ -1567,9 +1663,12 @@ def evaluate_error_function(self, context=None):
 #
 @method(function('trace', nargs=2, sequence_types=('item()*', 'xs:string', 'item()*')))
 def select_trace_function(self, context=None):
+    if self.context is not None:
+        context = self.context
+
     label = self.get_argument(context, index=1, cls=str)
     for value in self[0].select(context):
-        '{} {}'.format(label, str(value).strip())  # TODO: trace dataset
+        self.parser.tracer('{} {}'.format(label, str(value).strip()))
         yield value
 
 

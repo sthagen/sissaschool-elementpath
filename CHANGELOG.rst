@@ -2,6 +2,15 @@
 CHANGELOG
 *********
 
+`v4.0.1`_ (2023-02-02)
+======================
+* Fix packaging: include py.typed in package data
+* Revert to comparison between xs:QName instances and strings
+
+`v4.0.0`_ (2023-02-01)
+======================
+* First XPath 3.1 implementation (without UCA collation support)
+
 `v3.0.2`_ (2022-08-12)
 ======================
 * Extend root concept to subtrees used as root (e.g. XSD 1.1 assertions)
@@ -386,3 +395,5 @@ CHANGELOG
 .. _v3.0.0: https://github.com/sissaschool/elementpath/compare/v2.5.3...v3.0.0
 .. _v3.0.1: https://github.com/sissaschool/elementpath/compare/v3.0.0...v3.0.1
 .. _v3.0.2: https://github.com/sissaschool/elementpath/compare/v3.0.1...v3.0.2
+.. _v4.0.0: https://github.com/sissaschool/elementpath/compare/v3.0.2...v4.0.0
+.. _v4.0.1: https://github.com/sissaschool/elementpath/compare/v4.0.0...v4.0.1

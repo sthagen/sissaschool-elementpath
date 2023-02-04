@@ -17,16 +17,19 @@ into only one module.
 """
 import argparse
 import contextlib
+import datetime
 import decimal
 import re
 import json
+import html
 import math
 import os
-import pathlib
 import sys
 import traceback
 
 from collections import OrderedDict
+from itertools import zip_longest
+from pathlib import Path
 from urllib.parse import urlsplit
 from xml.etree import ElementTree
 import lxml.etree
@@ -36,13 +39,16 @@ import xmlschema
 
 from elementpath import ElementPathError, XPath2Parser, XPathContext, XPathNode, \
     CommentNode, ProcessingInstructionNode, get_node_tree
-from elementpath.namespaces import get_expanded_name
-from elementpath.xpath_token import XPathFunction
+from elementpath.namespaces import XML_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, get_expanded_name
+from elementpath.xpath_tokens import XPathFunction, XPathMap, XPathArray
 from elementpath.datatypes import AnyAtomicType
+from elementpath.sequence_types import is_sequence_type, match_sequence_type
 from elementpath.xpath31 import XPath31Parser
 
 
 PY38_PLUS = sys.version_info > (3, 8)
+
+XML_EXPANDED_PREFIX = f'{{{XML_NAMESPACE}}}'
 
 DEPENDENCY_TYPES = {'spec', 'feature', 'calendar', 'default-language',
                     'format-integer-sequence', 'language', 'limits',
@@ -126,10 +132,17 @@ SKIP_TESTS = {
     'prod-CastExpr__K2-SeqExprCast-488',
     'prod-CastExpr__K2-SeqExprCast-504',
 
+    # TODO: unsupported for serialization
+    'fn-serialize__serialize-xml-110',    # TODO: ElementNode serialization with params
+    'fn-serialize__serialize-html-001b',  # HTML 5
+    'fn-serialize__serialize-html-002b',  # HTML 5
+
     # IMHO incorrect tests
     'fn-resolve-uri__fn-resolve-uri-9',  # URI scheme names are lowercase
-    'fn-format-number__numberformat82',  # result may be '12.340,00' instead of '0.012,34'
-    'fn-format-number__numberformat83',  # (idem)
+    'fn-apply__fn-apply-13',  # Error code should be err:FOAP0001
+    'fn-json-doc__json-doc-032',  # 0 is not an instance of xs:double
+    'fn-json-doc__json-doc-033',  # 0 (should be -0) is not an instance of xs:double
+    'fn-function-lookup__fn-function-lookup-764',  # Error code should be FOQM0001
 }
 
 # Tests that can be run only with lxml.etree
@@ -206,6 +219,13 @@ LXML_ONLY = {
     'fn-parse-xml__parse-xml-010',
 }
 
+USE_SCHEMA_FOR_JSON = {
+    'fn-json-to-xml__json-to-xml-016',
+    'fn-json-to-xml__json-to-xml-017',
+    'fn-json-to-xml__json-to-xml-037',
+    'fn-json-to-xml__json-to-xml-038',
+}
+
 xpath_parser = XPath2Parser
 
 ignore_specs = {'XQ10', 'XQ10+', 'XP30', 'XP30+', 'XQ30', 'XQ30+',
@@ -214,9 +234,6 @@ ignore_specs = {'XQ10', 'XQ10+', 'XP30', 'XP30+', 'XQ30', 'XQ30+',
 QT3_NAMESPACE = "http://www.w3.org/2010/09/qt-fots-catalog"
 
 namespaces = {'': QT3_NAMESPACE}
-
-INVALID_BASE_URL = 'http://www.w3.org/fots/unparsed-text/'
-effective_base_url = None
 
 
 @contextlib.contextmanager
@@ -246,13 +263,23 @@ def get_context_result(item):
     return get_node_tree(root=item)
 
 
-def etree_is_equal(root1, root2, strict=True):
-    nodes1 = root1.iter()
-    nodes2 = root2.iter()
+def is_equivalent(t1, t2):
+    if t1 == t2 or html.unescape(t1) == html.unescape(t2):
+        return True
 
-    for e1 in nodes1:
-        e2 = next(nodes2, None)
-        if e2 is None:
+    try:
+        if decimal.Decimal(t1) != decimal.Decimal(t2):
+            return False
+    except (ValueError, decimal.DecimalException):
+        return False
+    else:
+        return True
+
+
+def etree_is_equal(root1, root2, strict=True):
+
+    for e1, e2 in zip_longest(root1.iter(), root2.iter()):
+        if e1 is None or e2 is None:
             return False
 
         if e1.tail != e2.tail:
@@ -264,18 +291,34 @@ def etree_is_equal(root1, root2, strict=True):
         if callable(e1.tag) ^ callable(e2.tag):
             return False
         elif not callable(e1.tag):
-            if e1.tag != e1.tag:
+            if e1.tag != e2.tag:
                 return False
-            if e1.attrib != e1.attrib:
-                return False
+            if e1.attrib != e2.attrib:
+                if strict:
+                    return False
+
+                attrib1 = e1.attrib
+                attrib2 = e2.attrib
+                if len(attrib1) != len(attrib2):
+                    attrib1 = {k: v for k, v in attrib1.items()
+                               if not k.startswith(XML_EXPANDED_PREFIX)}
+                    attrib2 = {k: v for k, v in attrib2.items()
+                               if not k.startswith(XML_EXPANDED_PREFIX)}
+                    if len(attrib1) != len(attrib2):
+                        return False
+
+                for (k1, v1), (k2, v2) in zip(attrib1.items(), attrib2.items()):
+                    if not is_equivalent(k1, k2) or not is_equivalent(v1, v2):
+                        return False
 
         if e1.text != e2.text:
             if strict or e1.text is None or e2.text is None:
                 return False
             if e1.text.strip() != e2.text.strip():
-                return False
-
-    return next(nodes2, None) is None
+                if not is_equivalent(e1.text, e2.text):
+                    return False
+    else:
+        return True
 
 
 class ExecutionError(Exception):
@@ -309,7 +352,7 @@ class Schema(object):
 
 
 class Source(object):
-    """Represents a source file as used in XML environment settings."""
+    """Represents an XML source file as used in environment settings."""
 
     namespaces = None
 
@@ -319,7 +362,7 @@ class Source(object):
         self.role = elem.attrib.get('role', '')
         self.uri = elem.attrib.get('uri', self.file)
         if not urlsplit(self.uri).scheme:
-            self.uri = pathlib.Path(self.uri).absolute().as_uri()
+            self.uri = Path(self.uri).absolute().as_uri()
 
         self.key = self.role or self.file
 
@@ -368,6 +411,18 @@ class Source(object):
         return '%s(file=%r)' % (self.__class__.__name__, self.file)
 
 
+class Resource(object):
+    """Represents a remote resource used in environment settings."""
+
+    def __init__(self, elem, use_lxml=False):
+        assert elem.tag == '{%s}resource' % QT3_NAMESPACE
+        self.uri = elem.attrib['uri']
+        self.file = elem.attrib['file']
+        self.file_uri = f'file://{os.getcwd()}/{self.file}'
+        self.media_type = elem.get('media-type')
+        self.encoding = elem.get('encoding')
+
+
 class Collection(object):
     """Represents a collection of source files as used in XML environment settings."""
 
@@ -388,6 +443,8 @@ class Environment(object):
     :param elem: the XML Element that contains the environment definition.
     :param use_lxml: use lxml.etree for loading XML sources.
     """
+    collation = None
+    default_collation = False
     collection = None
     schema = None
     static_base_uri = None
@@ -401,8 +458,8 @@ class Environment(object):
             for namespace in elem.iterfind('namespace', namespaces)
         }
 
-        child = elem.find('decimal-format', namespaces)
-        if child is not None:
+        self.decimal_formats = {}
+        for child in elem.iterfind('decimal-format', namespaces):
             name = child.get('name')
             if name is not None and ':' in name:
                 if use_lxml:
@@ -413,7 +470,12 @@ class Environment(object):
                     except KeyError:
                         pass
 
-            self.decimal_formats = {name: child.attrib}
+            self.decimal_formats[name] = child.attrib
+
+        child = elem.find('collation', namespaces)
+        if child is not None:
+            self.collation = child.get('uri')
+            self.default_collation = child.get('default') == 'true'
 
         child = elem.find('collection', namespaces)
         if child is not None:
@@ -434,6 +496,11 @@ class Environment(object):
             source = Source(child, use_lxml)
             self.sources[source.key] = source
 
+        self.resources = {}
+        for child in elem.iterfind('resource', namespaces):
+            resource = Resource(child, use_lxml)
+            self.resources[resource.uri] = resource
+
     def __repr__(self):
         return '%s(name=%r)' % (self.__class__.__name__, self.name)
 
@@ -452,6 +519,16 @@ class Environment(object):
         return '<environment name="{}">\n   {}\n</environment>'.format(
             self.name, '\n   '.join(children)
         )
+
+    def get_namespaces(self):
+        namespaces_ = self.namespaces.copy()
+        for source in self.sources.values():
+            if source.namespaces:
+                for pfx, uri in source.namespaces.items():
+                    if pfx not in namespaces_:
+                        namespaces_[pfx] = uri
+
+        return namespaces_
 
 
 class TestSet(object):
@@ -491,7 +568,8 @@ class TestSet(object):
                 if dep_type == 'spec':
                     self.specs.extend(value.split(' '))
                 elif dep_type == 'feature':
-                    self.features.append(value)
+                    if child.get('satisfied', 'true') in ('true', '1'):
+                        self.features.append(value)
                 elif dep_type == 'xsd-version':
                     self.xsd_version = value
                 else:
@@ -519,6 +597,7 @@ class TestCase(object):
     :param use_lxml: use lxml.etree for loading environment XML sources.
     """
     # Single value dependencies
+    parser = None
     calendar = None
     default_language = None
     format_integer_sequence = None
@@ -532,6 +611,8 @@ class TestCase(object):
         assert elem.tag == '{%s}test-case' % QT3_NAMESPACE
         self.test_set = test_set
         self.xsd_version = test_set.xsd_version
+        self.features = [feature for feature in test_set.features]
+
         self.use_lxml = use_lxml
         self.etree = lxml.etree if use_lxml else ElementTree
 
@@ -545,7 +626,6 @@ class TestCase(object):
         self.environment_ref = None
         self.environment = None
         self.specs = []
-        self.features = []
 
         for child in elem.findall('dependency', namespaces):
             dep_type = child.attrib['type']
@@ -553,7 +633,14 @@ class TestCase(object):
             if dep_type == 'spec':
                 self.specs.extend(value.split(' '))
             elif dep_type == 'feature':
-                self.features.append(value)
+                if child.get('satisfied') == 'false':
+                    try:
+                        self.features.remove(value)
+                    except ValueError:
+                        pass
+                else:
+                    self.features.append(value)
+
             elif dep_type in DEPENDENCY_TYPES:
                 setattr(self, dep_type.replace('-', '_'), value)
             else:
@@ -628,19 +715,23 @@ class TestCase(object):
 
         # Create the parser instance (static context)
         if environment is None:
-            test_namespaces = static_base_uri = schema_proxy = None
+            test_namespaces = static_base_uri = schema_proxy = default_collation = None
         else:
-            test_namespaces = environment.namespaces.copy()
-            for source in environment.sources.values():
-                if source.namespaces:
-                    for pfx, uri in source.namespaces.items():
-                        if pfx not in test_namespaces:
-                            test_namespaces[pfx] = uri
-
+            test_namespaces = environment.get_namespaces()
             static_base_uri = environment.static_base_uri
 
+            default_collation = None
+            if environment.collation is not None:
+                if environment.default_collation:
+                    default_collation = environment.collation
+
             if environment.schema is None or not environment.schema.filepath:
-                schema_proxy = None
+                if self.name in USE_SCHEMA_FOR_JSON:
+                    xsd_path = Path(__file__).parent.joinpath('resources/schema-for-json.xsd')
+                    schema = xmlschema.XMLSchema(xsd_path)
+                    schema_proxy = schema.xpath_proxy
+                else:
+                    schema_proxy = None
             else:
                 if verbose > 2:
                     print("Schema %r required for test %r" % (environment.schema.file, self.name))
@@ -655,10 +746,12 @@ class TestCase(object):
             else:
                 base_uri = os.path.dirname(os.path.abspath(self.test_set_file))
                 if os.path.isdir(base_uri):
-                    static_base_uri = f'{pathlib.Path(base_uri).as_uri()}/'
+                    static_base_uri = f'{Path(base_uri).as_uri()}/'
 
-        elif static_base_uri.startswith(INVALID_BASE_URL):
-            static_base_uri = static_base_uri.replace(INVALID_BASE_URL, effective_base_url)
+        elif environment and static_base_uri in environment.resources:
+            static_base_uri = environment.resources[static_base_uri].file_uri
+        elif static_base_uri == 'http://www.w3.org/fots/unparsed-text/':
+            static_base_uri = f'file://{os.getcwd()}/fn/unparsed-text/'
 
         kwargs = dict(
             namespaces=test_namespaces,
@@ -666,20 +759,26 @@ class TestCase(object):
             schema=schema_proxy,
             base_uri=static_base_uri,
             compatibility_mode='xpath-1.0-compatibility' in self.features,
+            default_collation=default_collation,
         )
         if environment is not None and xpath_parser.version >= '3.0':
-            kwargs['decimal_formats'] = environment.decimal_formats
+            if environment.decimal_formats:
+                kwargs['decimal_formats'] = environment.decimal_formats
             kwargs['defuse_xml'] = False
 
-        parser = xpath_parser(**kwargs)
+        self.parser = xpath_parser(**kwargs)
 
-        if self.test is not None:
-            xpath_expression = self.test.replace(INVALID_BASE_URL, effective_base_url)
-        else:
+        if self.test is None:
             xpath_expression = None
+        else:
+            xpath_expression = self.test
+            if environment:
+                for uri, resource in environment.resources.items():
+                    if uri in xpath_expression:
+                        xpath_expression = xpath_expression.replace(uri, resource.file_uri)
 
         try:
-            root_node = parser.parse(xpath_expression)  # static evaluation
+            root_node = self.parser.parse(xpath_expression)  # static evaluation
         except Exception as err:
             if isinstance(err, ElementPathError):
                 raise
@@ -693,6 +792,7 @@ class TestCase(object):
                 root=self.etree.XML("<empty/>"),
                 namespaces=test_namespaces,
                 timezone='Z',
+                default_language=self.default_language,
                 default_calendar=self.calendar
             )
         else:
@@ -736,6 +836,8 @@ class TestCase(object):
                 kwargs['variables'] = variables
             if documents:
                 kwargs['documents'] = documents
+            if self.default_language:
+                kwargs['default_language'] = self.default_language
             if self.calendar:
                 kwargs['default_calendar'] = self.calendar
 
@@ -784,7 +886,6 @@ class Result(object):
     :param test_case: the test-case that the result validator belongs to.
     """
     # Validation helper tokens
-    parser = xpath_parser()
     string_token = XPath31Parser().parse('fn:string($result)')
     string_join_token = XPath31Parser().parse('fn:string-join($result, " ")')
 
@@ -823,11 +924,13 @@ class Result(object):
         if verbose <= 1:
             return
 
+        print(f'Fail for test case {self.test_case.name!r}')
+        print(f'Result failed: {self}')
+
         if verbose < 4:
-            print('Result <{}> failed for test case {!r}'.format(self.type, self.test_case.name))
-            print('XPath expression: {}'.format(self.test_case.test))
+            print(f'XPath expression: {self.test_case.test.strip()}')
         else:
-            print('Result <{}> failed\n'.format(self.type))
+            print()
             print(self.test_case)
 
         if results:
@@ -902,7 +1005,9 @@ class Result(object):
             elif isinstance(expected_result, decimal.Decimal) and isinstance(result, float):
                 if float(expected_result) == result:
                     return True
-        except TypeError:
+            elif decimal.Decimal(expected_result) == decimal.Decimal(result):
+                return True
+        except (TypeError, ValueError, decimal.DecimalException):
             pass
 
         self.report_failure(verbose, expected=expected_result, result=result)
@@ -918,15 +1023,20 @@ class Result(object):
         if isinstance(result, list) and len(result) == 1:
             result = result[0]
 
+        parser = xpath_parser(namespaces={'j': XPATH_FUNCTIONS_NAMESPACE})
         if self.value == 'function(*)':
             type_check = isinstance(result, XPathFunction)
-        elif not self.parser.is_sequence_type(self.value):
+        elif self.value == 'array(*)':
+            type_check = isinstance(result, XPathArray)
+        elif self.value == 'map(*)':
+            type_check = isinstance(result, XPathMap)
+        elif not is_sequence_type(self.value, parser):
             msg = " test-case {}: {!r} is not a valid sequence type"
             print(msg.format(self.test_case.name, self.value))
             type_check = False
         else:
             context_result = get_context_result(result)
-            type_check = self.parser.match_sequence_type(context_result, self.value)
+            type_check = match_sequence_type(context_result, self.value, parser)
 
         if not type_check:
             self.report_failure(
@@ -1040,7 +1150,7 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        if isinstance(result, AnyAtomicType):
+        if isinstance(result, (AnyAtomicType, XPathArray, XPathMap)):
             length = 1
         else:
             try:
@@ -1070,9 +1180,11 @@ class Result(object):
             return False
 
         variables = {'result': result}
-        parser = XPath31Parser(xsd_version=self.test_case.xsd_version)
-        root_node = parser.parse(self.value)
-        context = XPathContext(root=self.etree.XML("<empty/>"), variables=variables)
+        root_node = self.test_case.parser.parse(self.value)
+        context = XPathContext(
+            root=self.etree.XML("<empty/>"),
+            variables=variables
+        )
         if root_node.boolean_value(root_node.evaluate(context)) is True:
             return True
 
@@ -1086,8 +1198,8 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        if isinstance(result, (str, bytes)):
-            result = result.strip()
+        if isinstance(result, list) and len(result) == 1:
+            result = result[0]
 
         expression = "fn:deep-equal($result, (%s))" % self.value
         variables = {'result': result}
@@ -1125,7 +1237,7 @@ class Result(object):
         if not isinstance(result, list):
             result = [result]
 
-        expected = self.parser.parse(self.value).evaluate()
+        expected = xpath_parser().parse(self.value).evaluate()
         if not isinstance(expected, list):
             expected = [expected]
 
@@ -1203,7 +1315,7 @@ class Result(object):
                 for prefix, uri in environment.namespaces.items():
                     ElementTree.register_namespace(prefix, uri)
             else:
-                for prefix, uri in self.parser.namespaces.items():
+                for prefix, uri in xpath_parser.DEFAULT_NAMESPACES.items():
                     ElementTree.register_namespace(prefix, uri)
 
         if self.value is not None:
@@ -1255,7 +1367,7 @@ class Result(object):
         try:
             if xml_str == tostring(fromstring(expected)).decode('utf-8').strip():
                 return True
-            if etree_is_equal(fromstring(xml_str), fromstring(expected)):
+            if etree_is_equal(fromstring(xml_str), fromstring(expected), strict=False):
                 return True
         except (ElementTree.ParseError, lxml.etree.ParseError):
             # invalid XML data (maybe empty or concatenation of XML elements)
@@ -1300,9 +1412,13 @@ def main():
                         help="test XPath 3.0 parser")
     parser.add_argument('-l', '--lxml', dest='use_lxml', action='store_true', default=False,
                         help="use lxml.etree for environment sources (default is ElementTree)")
+    parser.add_argument('-c', dest='show_test_case', action='store_true', default=False,
+                        help="show test case information before execution")
     parser.add_argument('-v', dest='verbose', action='count', default=1,
                         help='increase verbosity: one option to show unexpected errors, '
                              'two for show also unmatched error codes, three for debug')
+    parser.add_argument('-q', '--quiet', action='store_true', default=False,
+                        help="run without printing steps or errors")
     parser.add_argument('-r', dest='report', metavar='REPORT_FILE',
                         help="write a report (JSON format) to the given file")
     args = parser.parse_args()
@@ -1318,14 +1434,25 @@ def main():
     pattern = re.compile(args.pattern, flags=re.IGNORECASE if args.ignore_case else 0)
     etree = lxml.etree if args.use_lxml else ElementTree
 
+    if not args.quiet:
+        verbose = args.verbose
+    elif args.verbose > 1:
+        print("Error: quiet and verbose options are mutually exclusive")
+        sys.exit(1)
+    else:
+        verbose = 0
+
     if not os.path.isfile(catalog_file):
         print("Error: catalog file %s does not exist" % args.catalog)
         sys.exit(1)
+
+    start_time = datetime.datetime.now()
 
     if args.xp31:
         from elementpath.xpath31 import XPath31Parser
 
         xpath_parser = XPath31Parser
+        Result.parser = xpath_parser()
         ignore_specs.remove('XP30+')
         ignore_specs.remove('XP31')
         ignore_specs.remove('XP31+')
@@ -1335,15 +1462,13 @@ def main():
         from elementpath.xpath30 import XPath30Parser
 
         xpath_parser = XPath30Parser
+        Result.parser = xpath_parser()
         ignore_specs.remove('XP30')
         ignore_specs.remove('XP30+')
         ignore_specs.add('XP20')
 
     with working_directory(dirpath=os.path.dirname(catalog_file)):
         catalog_xml = etree.parse(catalog_file)
-
-        global effective_base_url
-        effective_base_url = 'file://{}/fn/unparsed-text/'.format(os.getcwd())
 
         environments = {}
         for child in catalog_xml.getroot().iterfind("environment", namespaces):
@@ -1386,8 +1511,23 @@ def main():
                     count_skip += 1
                     continue
 
-                # ignore tests that rely on higher-order function such as array:sort()
-                if 'higherOrderFunctions' in test_case.features:
+                # ignore tests that rely on high level of support for uca collation semantics
+                if 'advanced-uca-fallback' in test_case.features:
+                    count_skip += 1
+                    continue
+
+                # ignore tests that require an XQuery processor available
+                if 'fn-load-xquery-module' in test_case.features:
+                    count_skip += 1
+                    continue
+
+                # ignore tests that require an XSLT processor available
+                if 'fn-transform-XSLT' in test_case.features:
+                    count_skip += 1
+                    continue
+
+                # ignore tests that require an XSLT 3.0 processor available
+                if 'fn-transform-XSLT30' in test_case.features:
                     count_skip += 1
                     continue
 
@@ -1436,8 +1576,13 @@ def main():
                         continue
 
                 count_run += 1
+                if args.show_test_case:
+                    print(f"Run test case {test_case.name!r}", flush=True)
+                elif verbose == 1:
+                    print('.', end='', flush=True)
+
                 try:
-                    case_result = test_case.run(verbose=args.verbose)
+                    case_result = test_case.run(verbose)
                     if case_result is True:
                         if args.report:
                             report['success'].append(test_case.name)
@@ -1451,16 +1596,21 @@ def main():
                             report['unknown'].append(test_case.name)
                         count_unknown += 1
                 except Exception as err:
-                    print("\nUnexpected failure for test %r" % test_case.name)
-                    print(type(err), str(err))
+                    if verbose:
+                        print("\nUnexpected failure for test %r" % test_case.name)
+                        print(type(err), str(err), flush=True)
 
-                    if args.verbose >= 4:
+                    if verbose >= 4:
                         traceback.print_exc()
                     if args.report:
                         report['other_failures'].append(test_case.name)
                     count_other_failures += 1
 
+        elapsed_time = (datetime.datetime.now() - start_time).seconds
+
         print("\n*** Totals of W3C XPath tests execution ***\n")
+
+        print(f"Total elapsed time: {elapsed_time}s\n")
         print("%d test cases read" % count_read)
         print("%d test cases skipped" % count_skip)
         print("%d test cases run\n" % count_run)

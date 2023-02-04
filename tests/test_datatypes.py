@@ -150,6 +150,33 @@ class FloatTypesTest(unittest.TestCase):
     def test_abs(self):
         self.assertEqual(abs(Float10('-20.2')), 20.2)
 
+    def test_nan(self):
+        self.assertNotEqual(math.nan, math.nan)  # NaN is not equal to itself!
+        self.assertIs(math.nan, math.nan)
+
+        if platform.python_implementation() == 'PyPy':
+            # PyPy uses the same instance for float('nan') and math.nan
+            self.assertIs(float('nan'), float('nan'))
+        else:
+            self.assertIsNot(float('nan'), float('nan'))
+
+        self.assertTrue(math.isnan(Float10('NaN')))
+        self.assertTrue(math.isnan(Float10(math.nan)))
+
+        self.assertNotEqual(Float10('NaN'), Float10('NaN'))
+        self.assertIs(Float10('NaN'), Float10('NaN'))
+        self.assertIs(Float10('NaN'), Float('NaN'))
+        self.assertIs(Float10(math.nan), Float10('NaN'))
+        self.assertIsNot(Float10(math.nan), math.nan)
+
+        self.assertIsNot(Float10('NaN'), DoubleProxy10('NaN'))
+
+        # Invalid values for constructor function
+        self.assertRaises(ValueError, Float10, 'NAN')
+        with self.assertRaises(ValueError) as ctx:
+            Float10('nan')
+        self.assertEqual(str(ctx.exception), "invalid value 'nan' for xs:float")
+
 
 class IntegerTypesTest(unittest.TestCase):
 
@@ -1146,11 +1173,11 @@ class TimezoneTypeTest(unittest.TestCase):
 class BinaryTypesTest(unittest.TestCase):
 
     def test_initialization(self):
-        self.assertEqual(Base64Binary(b'YWxwaGE='), b'YWxwaGE=')
-        self.assertEqual(HexBinary(b'F859'), b'F859')
+        self.assertEqual(Base64Binary(b'YWxwaGE=').value, b'YWxwaGE=')
+        self.assertEqual(HexBinary(b'F859').value, b'F859')
 
-        self.assertEqual(Base64Binary(Base64Binary(b'YWxwaGE=')), b'YWxwaGE=')
-        self.assertEqual(HexBinary(HexBinary(b'F859')), b'F859')
+        self.assertEqual(Base64Binary(Base64Binary(b'YWxwaGE=')).value, b'YWxwaGE=')
+        self.assertEqual(HexBinary(HexBinary(b'F859')).value, b'F859')
 
         try:
             self.assertEqual(Base64Binary(HexBinary(b'F859')).decode(),
@@ -1189,16 +1216,11 @@ class BinaryTypesTest(unittest.TestCase):
         self.assertEqual(HexBinary(b'8a7f'), HexBinary(b'8A7F'))
         self.assertEqual(HexBinary(b'8A7F'), HexBinary(b'8a7f'))
 
-        self.assertEqual(b'8a7f', HexBinary(b'8A7F'))
-        self.assertEqual(HexBinary(b'8A7F'), b'8a7f')
-        self.assertEqual('8a7f', HexBinary(b'8A7F'))
-        self.assertEqual(HexBinary(b'8A7F'), '8a7f')
+        self.assertEqual(HexBinary(b'8a7f'), HexBinary(b'8A7F'))
+        self.assertEqual(HexBinary(b'8A7F'), HexBinary(b'8a7f'))
 
         self.assertEqual(Base64Binary(b'YWxwaGE='), Base64Binary(b'YWxwaGE='))
         self.assertNotEqual(Base64Binary(b'YWxwaGE='), Base64Binary(b'ywxwaGE='))
-        self.assertEqual(Base64Binary(b'YWxwaGE='), UntypedAtomic('YWxwaGE='))
-        self.assertEqual(Base64Binary(b'YWxwaGE='), 'YWxwaGE=')
-        self.assertEqual(Base64Binary('YWxwaGE='), b'YWxwaGE=')
 
         self.assertNotEqual(HexBinary(b'F859'), Base64Binary(b'YWxwaGE='))
         self.assertEqual(HexBinary(b'F859'), UntypedAtomic(HexBinary(b'F859')))
@@ -1476,6 +1498,9 @@ class TypeProxiesTest(unittest.TestCase):
             DoubleProxy('nan')
         with self.assertRaises(ValueError):
             DoubleProxy('inf')
+
+        self.assertIs(DoubleProxy10('NaN'), DoubleProxy10('NaN'))
+        self.assertIs(DoubleProxy10('NaN'), DoubleProxy('NaN'))
 
         self.assertIsNone(DoubleProxy10.validate(1.9))
         self.assertIsNone(DoubleProxy10.validate('1.9'))
