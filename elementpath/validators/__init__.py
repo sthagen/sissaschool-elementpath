@@ -11,32 +11,44 @@
 Subpackage for validating against XPath standard schemas.
 """
 import pathlib
+from xml.etree.ElementTree import Element
 from typing import Optional
 
-import xmlschema
-from ..namespaces import XPATH_FUNCTIONS_NAMESPACE
+from ..exceptions import ElementPathRuntimeError
 
-analyzed_string_schema: Optional[xmlschema.XMLSchemaBase] = None
-json_to_xml_schema: Optional[xmlschema.XMLSchemaBase] = None
+try:
+    import xmlschema
+except ImportError:  # pragma: no cover
+    from ..exceptions import xpath_error
 
-__all__ = ['validate_analyzed_string', 'validate_json_to_xml']
+    def validate_analyzed_string(root: Element) -> None:
+        raise ElementPathRuntimeError('not schema-aware')
 
+    def validate_json_to_xml(root: Element) -> None:
+        raise xpath_error('FOJS0004')
 
-def validate_analyzed_string(xml_data: str) -> None:
-    global analyzed_string_schema
+else:
+    from ..namespaces import XPATH_FUNCTIONS_NAMESPACE
 
-    if analyzed_string_schema is None:
-        xsd_file = pathlib.Path(__file__).parent.joinpath('analyze-string.xsd')
-        analyzed_string_schema = xmlschema.XMLSchema(xsd_file)
+    analyzed_string_schema: Optional[xmlschema.XMLSchemaBase] = None
+    json_to_xml_schema: Optional[xmlschema.XMLSchemaBase] = None
 
-    analyzed_string_schema.validate(xml_data)
+    __all__ = ['validate_analyzed_string', 'validate_json_to_xml']
 
+    def validate_analyzed_string(root: Element) -> None:
+        global analyzed_string_schema
 
-def validate_json_to_xml(xml_data: str) -> None:
-    global json_to_xml_schema
+        if analyzed_string_schema is None:
+            xsd_file = pathlib.Path(__file__).parent.joinpath('analyze-string.xsd')
+            analyzed_string_schema = xmlschema.XMLSchema(xsd_file)
 
-    if json_to_xml_schema is None:
-        xsd_file = pathlib.Path(__file__).parent.joinpath('schema-for-json.xsd')
-        json_to_xml_schema = xmlschema.XMLSchema(xsd_file)
+        analyzed_string_schema.validate(root)
 
-    json_to_xml_schema.validate(xml_data, namespaces={'j': XPATH_FUNCTIONS_NAMESPACE})
+    def validate_json_to_xml(root: Element) -> None:
+        global json_to_xml_schema
+
+        if json_to_xml_schema is None:
+            xsd_file = pathlib.Path(__file__).parent.joinpath('schema-for-json.xsd')
+            json_to_xml_schema = xmlschema.XMLSchema(xsd_file)
+
+        json_to_xml_schema.validate(root, namespaces={'j': XPATH_FUNCTIONS_NAMESPACE})

@@ -17,6 +17,7 @@ import re
 import codecs
 import math
 from copy import copy
+from itertools import zip_longest
 from typing import cast, Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -62,7 +63,7 @@ function = XPath30Parser.function
 ###
 # 'inline function' expression or 'function test'
 
-class InlineFunction(XPathFunction):
+class _InlineFunction(XPathFunction):
 
     symbol = lookup_name = 'function'
     lbp = 90
@@ -78,8 +79,39 @@ class InlineFunction(XPathFunction):
     varnames: Optional[List[str]] = None
     "Inline function arguments varnames."
 
-    def __call__(self, context: Optional[XPathContext] = None,
-                 *args: XPathFunctionArgType) -> Any:
+    def __str__(self) -> str:
+        return str(self.label)
+
+    @property
+    def source(self) -> str:
+        if self.label == 'function test':
+            if len(self.sequence_types) == 1 and self.sequence_types[0] == '*':
+                return 'function(*)'
+            else:
+                return 'function(%s) as %s' % (
+                    ', '.join(self.sequence_types[:-1]), self.sequence_types[-1]
+                )
+
+        arguments = []
+        return_type = ''
+        for var, sq in zip_longest(self, self.sequence_types):
+            if var is None:
+                if sq != 'item()*':
+                    return_type = f' as {sq}'
+            elif sq is None or sq == 'item()*':
+                arguments.append(var.source)
+            else:
+                arguments.append(f'{var.source} as {sq}')
+
+        return '%s(%s)%s {%s}' % (
+            self.symbol,
+            ', '.join(arguments),
+            return_type,
+            getattr(self.body, 'source', '')
+        )
+
+    def __call__(self, *args: XPathFunctionArgType,
+                 context: Optional[XPathContext] = None) -> Any:
 
         def get_argument(v: Any) -> Any:
             if isinstance(v, XPathToken) and not isinstance(v, XPathFunction):
@@ -271,18 +303,18 @@ class InlineFunction(XPathFunction):
         self.nargs = nargs
 
 
-XPath30Parser.symbol_table['function'] = InlineFunction
+XPath30Parser.symbol_table['function'] = _InlineFunction
 
 
 ###
 # Mathematical functions
-@method(function('pi', prefix='math', label='math function', nargs=0,
+@method(function('pi', prefix='math', nargs=0,
                  sequence_types=('xs:double',)))
 def evaluate_pi_function(self, context=None):
     return math.pi
 
 
-@method(function('exp', prefix='math', label='math function', nargs=1,
+@method(function('exp', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_exp_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -291,7 +323,7 @@ def evaluate_exp_function(self, context=None):
     return math.exp(arg)
 
 
-@method(function('exp10', prefix='math', label='math function', nargs=1,
+@method(function('exp10', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_exp10_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -300,7 +332,7 @@ def evaluate_exp10_function(self, context=None):
     return float(10 ** arg)
 
 
-@method(function('log', prefix='math', label='math function', nargs=1,
+@method(function('log', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_log_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -309,7 +341,7 @@ def evaluate_log_function(self, context=None):
     return float('-inf') if not arg else math.nan if arg <= -1 else math.log(arg)
 
 
-@method(function('log10', prefix='math', label='math function', nargs=1,
+@method(function('log10', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_log10_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -318,7 +350,7 @@ def evaluate_log10_function(self, context=None):
     return float('-inf') if not arg else math.nan if arg <= -1 else math.log10(arg)
 
 
-@method(function('pow', prefix='math', label='math function', nargs=2,
+@method(function('pow', prefix='math', nargs=2,
                  sequence_types=('xs:double?', 'xs:numeric', 'xs:double?')))
 def evaluate_pow_function(self, context=None):
     if self.context is not None:
@@ -337,7 +369,7 @@ def evaluate_pow_function(self, context=None):
         return math.nan
 
 
-@method(function('sqrt', prefix='math', label='math function', nargs=1,
+@method(function('sqrt', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_sqrt_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -348,7 +380,7 @@ def evaluate_sqrt_function(self, context=None):
     return math.sqrt(arg)
 
 
-@method(function('sin', prefix='math', label='math function', nargs=1,
+@method(function('sin', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_sin_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -359,7 +391,7 @@ def evaluate_sin_function(self, context=None):
     return math.sin(arg)
 
 
-@method(function('cos', prefix='math', label='math function', nargs=1,
+@method(function('cos', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_cos_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -370,7 +402,7 @@ def evaluate_cos_function(self, context=None):
     return math.cos(arg)
 
 
-@method(function('tan', prefix='math', label='math function', nargs=1,
+@method(function('tan', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_tan_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -381,7 +413,7 @@ def evaluate_tan_function(self, context=None):
     return math.tan(arg)
 
 
-@method(function('asin', prefix='math', label='math function', nargs=1,
+@method(function('asin', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_asin_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -392,7 +424,7 @@ def evaluate_asin_function(self, context=None):
     return math.asin(arg)
 
 
-@method(function('acos', prefix='math', label='math function', nargs=1,
+@method(function('acos', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_acos_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -403,7 +435,7 @@ def evaluate_acos_function(self, context=None):
     return math.acos(arg)
 
 
-@method(function('atan', prefix='math', label='math function', nargs=1,
+@method(function('atan', prefix='math', nargs=1,
                  sequence_types=('xs:double?', 'xs:double?')))
 def evaluate_atan_function(self, context=None):
     arg = self.get_argument(self.context or context, cls=NumericProxy)
@@ -412,7 +444,7 @@ def evaluate_atan_function(self, context=None):
     return math.atan(arg)
 
 
-@method(function('atan2', prefix='math', label='math function', nargs=2,
+@method(function('atan2', prefix='math', nargs=2,
                  sequence_types=('xs:double', 'xs:double', 'xs:double')))
 def evaluate_atan2_function(self, context=None):
     if self.context is not None:
@@ -1546,7 +1578,7 @@ def select_for_each_function(self, context=None):
         func = self.get_argument(context, index=1, cls=XPathFunction, required=True)
 
     for item in self[0].select(copy(context)):
-        result = func(context, item)
+        result = func(item, context=context)
         if isinstance(result, list):
             yield from result
         else:
@@ -1564,7 +1596,7 @@ def select_filter_function(self, context=None):
         raise self.error('XPTY0004', f'invalid number of arguments {func.nargs}')
 
     for item in self[0].select(copy(context)):
-        cond = func(context, item)
+        cond = func(item, context=context)
         if not isinstance(cond, bool):
             raise self.error('XPTY0004', 'a single boolean value required')
         if cond:
@@ -1585,7 +1617,7 @@ def select_fold_left_function(self, context=None):
 
     result = zero
     for item in self[0].select(copy(context)):
-        result = func(context, result, item)
+        result = func(result, item, context=context)
 
     if isinstance(result, list):
         yield from result
@@ -1609,7 +1641,7 @@ def select_fold_right_function(self, context=None):
     sequence = [x for x in self[0].select(copy(context))]
 
     for item in reversed(sequence):
-        result = func(context, item, result)
+        result = func(item, result, context=context)
 
     if isinstance(result, list):
         yield from result
@@ -1631,7 +1663,7 @@ def select_for_each_pair_function(self, context=None):
         raise self.error('XPTY0004', "function arity of 3rd argument must be 2")
 
     for item1, item2 in zip(self[0].select(copy(context)), self[1].select(copy(context))):
-        result = func(context, item1, item2)
+        result = func(item1, item2, context=context)
         if isinstance(result, list):
             yield from result
         else:

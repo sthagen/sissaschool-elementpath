@@ -42,8 +42,16 @@ WRONG_ESCAPE_PATTERN = re.compile(r'%(?![a-fA-F\d]{2})')
 XML_NEWLINES_PATTERN = re.compile('\r\n|\r|\n')
 
 
+def upper_camel_case(s: str) -> str:
+    return re.sub(r'^\d+', '', re.sub(r'[\W_]', '', s.title()))
+
+
 def collapse_white_spaces(s: str) -> str:
     return WHITESPACES_PATTERN.sub(' ', s).strip(' ')
+
+
+def is_ncname(s: str) -> bool:
+    return re.match(r'^[^\d\W][\w.\-\u00B7\u0300-\u036F\u203F\u2040]*$', s) is not None
 
 
 def is_idrefs(value: Optional[str]) -> bool:
@@ -192,10 +200,6 @@ def numeric_not_equal(op1: SupportsFloat, op2: SupportsFloat) -> bool:
     if op1 == op2:
         return False
     return not math.isclose(op1, op2, rel_tol=1e-7, abs_tol=0.0)
-
-
-def is_nan(x: Any) -> bool:
-    return isinstance(x, float) and math.isnan(x)
 
 
 def equal(op1: Any, op2: Any) -> bool:

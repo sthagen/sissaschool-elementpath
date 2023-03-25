@@ -201,7 +201,7 @@ XPATH_ERROR_CODES = {
     # XPath 3.1+ errors
     'FOJS0001': (ElementPathSyntaxError, 'JSON syntax error'),
     'FOJS0003': (ElementPathValueError, 'JSON duplicate keys'),
-    'FOJS0004': (ElementPathValueError, 'JSON: not schema-aware'),
+    'FOJS0004': (ElementPathRuntimeError, 'JSON: not schema-aware'),
     'FOJS0005': (ElementPathValueError, 'Invalid options'),
     'FOJS0006': (ElementPathValueError, 'Invalid XML representation of JSON'),
     'FOJS0007': (ElementPathValueError, 'Bad JSON escape sequence'),
@@ -267,10 +267,10 @@ def xpath_error(code: Union[str, QName],
                 message = '{!r} is not an xs:QName'.format(code)
                 raise ElementPathValueError(message, 'err:XPTY0004', token)
             else:
-                pcode = f'{prefix}:{code}'
+                pcode = f'{prefix}:{code}' if prefix else code
 
         elif ':' not in code:
-            pcode = f'{prefix}:{code}'
+            pcode = f'{prefix}:{code}' if prefix else code
         elif code.startswith(f'{prefix}:') and code.count(':') == 1:
             pcode, code = code, code.split(':')[1]
         else:

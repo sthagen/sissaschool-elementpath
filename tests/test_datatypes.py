@@ -27,15 +27,80 @@ except ImportError:
     xmlschema = None
 
 from elementpath.helpers import MONTH_DAYS, MONTH_DAYS_LEAP
-from elementpath.datatypes import DateTime, DateTime10, Date, Date10, Time, \
-    Timezone, Duration, DayTimeDuration, YearMonthDuration, UntypedAtomic, \
+from elementpath.datatypes import AnyAtomicType, DateTime, DateTime10, Date, Date10, \
+    Time, Timezone, Duration, DayTimeDuration, YearMonthDuration, UntypedAtomic, \
     GregorianYear, GregorianYear10, GregorianYearMonth, GregorianYearMonth10, \
     GregorianMonthDay, GregorianMonth, GregorianDay, AbstractDateTime, NumericProxy, \
     ArithmeticProxy, Id, Notation, QName, Base64Binary, HexBinary, NormalizedString, \
-    XsdToken, Language, Float, Float10, Integer, AnyURI, BooleanProxy, DecimalProxy, \
-    DoubleProxy10, DoubleProxy, StringProxy, get_atomic_value
+    XsdToken, Language, Float, Float10, Integer, Short, NegativeInteger, AnyURI, \
+    BooleanProxy, DecimalProxy, DoubleProxy10, DoubleProxy, StringProxy, \
+    xsd10_atomic_types, xsd11_atomic_types, get_atomic_value
 from elementpath.datatypes.atomic_types import AtomicTypeMeta
 from elementpath.datatypes.datetime import OrderedDateTime
+
+
+class AtomicTypesTest(unittest.TestCase):
+
+    def test_xsd_atomic_types_maps(self):
+        self.assertEqual(len(xsd10_atomic_types), 45 * 2)
+        self.assertEqual(len(xsd11_atomic_types), 46 * 2)
+        self.assertSetEqual(
+            set(xsd11_atomic_types) - set(xsd10_atomic_types),
+            {'{http://www.w3.org/2001/XMLSchema}dateTimeStamp', 'dateTimeStamp'}
+        )
+
+    @unittest.skipIf(xmlschema is None, "xmlschema library required.")
+    def test_get_atomic_value(self):
+        schema = xmlschema.XMLSchema(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+              <xs:element name="a" type="aType"/>
+              <xs:complexType name="aType">
+                <xs:sequence>
+                  <xs:element name="b1" type="xs:int"/>
+                  <xs:element name="b2" type="xs:boolean"/>
+                </xs:sequence>
+              </xs:complexType>
+
+              <xs:element name="b" type="xs:int"/>
+              <xs:element name="c"/>
+
+              <xs:element name="d" type="dType"/>
+              <xs:simpleType name="dType">
+                <xs:restriction base="xs:float"/>
+              </xs:simpleType>
+
+              <xs:element name="e" type="eType"/>
+              <xs:simpleType name="eType">
+                <xs:union memberTypes="xs:string xs:integer xs:boolean"/>
+              </xs:simpleType>
+            </xs:schema>"""))
+
+        self.assertEqual(get_atomic_value(schema.elements['d'].type), UntypedAtomic('1'))
+
+        with self.assertRaises(AttributeError):
+            get_atomic_value(schema)
+
+        self.assertEqual(get_atomic_value(xsd_type=None), UntypedAtomic(value='1'))
+
+        value = get_atomic_value(schema.elements['a'].type)
+        self.assertIsInstance(value, UntypedAtomic)
+        self.assertEqual(value, UntypedAtomic(value='1'))
+
+        value = get_atomic_value(schema.elements['b'].type)
+        self.assertIsInstance(value, int)
+        self.assertEqual(value, 1)
+
+        value = get_atomic_value(schema.elements['c'].type)
+        self.assertIsInstance(value, UntypedAtomic)
+        self.assertEqual(value, UntypedAtomic(value='1'))
+
+        value = get_atomic_value(schema.elements['d'].type)
+        self.assertIsInstance(value, float)
+        self.assertEqual(value, 1.0)
+
+        value = get_atomic_value(schema.elements['e'].type)
+        self.assertIsInstance(value, UntypedAtomic)
+        self.assertEqual(value, UntypedAtomic(value='1'))
 
 
 class AnyAtomicTypeTest(unittest.TestCase):
@@ -82,6 +147,20 @@ class StringTypesTest(unittest.TestCase):
             Language(10), '10'
         self.assertEqual("invalid value '10' for xs:language", str(ctx.exception))
 
+    def test_isinstance(self):
+        value = NormalizedString('xyz')
+        self.assertIsInstance(value, AnyAtomicType)
+        self.assertIsInstance(value, str)
+        self.assertIsInstance(value, NormalizedString)
+        self.assertNotIsInstance(value, XsdToken)
+        self.assertNotIsInstance(value, bytes)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(NormalizedString, AnyAtomicType))
+        self.assertTrue(issubclass(NormalizedString, str))
+        self.assertTrue(issubclass(NormalizedString, StringProxy))
+        self.assertFalse(issubclass(NormalizedString, XsdToken))
+
 
 class FloatTypesTest(unittest.TestCase):
 
@@ -123,11 +202,23 @@ class FloatTypesTest(unittest.TestCase):
         self.assertEqual(Float('10.1') + Float10('10.1'), 20.2)
         self.assertEqual(10.1 + Float10('10.1'), 20.2)
 
+        with self.assertRaises(TypeError):
+            '10.1' + Float10('10.1')
+
+        with self.assertRaises(TypeError):
+            Float10('10.1') + '10.1'
+
     def test_subtraction(self):
         self.assertEqual(Float10('10.1') - Float10('1.1'), 9.0)
         self.assertEqual(Float('10.1') - Float10('1.1'), 9.0)
         self.assertEqual(10.1 - Float10('1.1'), 9.0)
         self.assertEqual(10 - Float10('1.1'), 8.9)
+
+        with self.assertRaises(TypeError):
+            '10.1' - Float10('10.1')
+
+        with self.assertRaises(TypeError):
+            Float10('10.1') - '10.1'
 
     def test_multiplication(self):
         self.assertEqual(Float10('10.1') * 2, 20.2)
@@ -135,17 +226,38 @@ class FloatTypesTest(unittest.TestCase):
         self.assertEqual(2 * Float10('10.1'), 20.2)
         self.assertEqual(2.0 * Float('10.1'), 20.2)
 
+        with self.assertRaises(TypeError):
+            Float10('10.1') * '2.0'
+
+        with self.assertRaises(TypeError):
+            '10.1' * Float10('2.0')
+
     def test_division(self):
         self.assertEqual(Float10('20.2') / 2, 10.1)
         self.assertEqual(Float('20.2') / 2.0, 10.1)
         self.assertEqual(20.2 / Float10('2'), 10.1)
         self.assertEqual(20 / Float('2'), 10.0)
 
+        with self.assertRaises(TypeError):
+            Float10('10.1') / '2.0'
+
+        with self.assertRaises(TypeError):
+            '10.1' / Float10('2.0')
+
     def test_module(self):
         self.assertEqual(Float10('20.2') % 3, 20.2 % 3)
         self.assertEqual(Float('20.2') % 3.0, 20.2 % 3.0)
         self.assertEqual(20.2 % Float10('3'), 20.2 % 3)
         self.assertEqual(20 % Float('3.0'), 20 % 3.0)
+
+        with self.assertRaises(TypeError):
+            Float10('20.2') % '3.0'
+
+        with self.assertRaises(TypeError):
+            True % Float10('3.0')
+
+        with self.assertRaises(TypeError):
+            () % Float10('3.0')
 
     def test_abs(self):
         self.assertEqual(abs(Float10('-20.2')), 20.2)
@@ -177,6 +289,20 @@ class FloatTypesTest(unittest.TestCase):
             Float10('nan')
         self.assertEqual(str(ctx.exception), "invalid value 'nan' for xs:float")
 
+    def test_isinstance(self):
+        value = Float10(1.0)
+        self.assertIsInstance(value, Float10)
+        self.assertNotIsInstance(value, int)
+        self.assertIsInstance(value, AnyAtomicType)
+        self.assertNotIsInstance(value, Short)
+        self.assertIsInstance(value, float)
+        self.assertNotIsInstance(value, Float)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(Float10, AnyAtomicType))
+        self.assertTrue(issubclass(Float, AnyAtomicType))
+        self.assertTrue(issubclass(Float10, float))
+
 
 class IntegerTypesTest(unittest.TestCase):
 
@@ -190,6 +316,23 @@ class IntegerTypesTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             Integer.validate('10.1')
+
+    def test_isinstance(self):
+        value = Integer(1)
+        self.assertIsInstance(value, Integer)
+        self.assertIsInstance(value, int)
+        self.assertIsInstance(value, AnyAtomicType)
+        self.assertNotIsInstance(value, Short)
+        self.assertNotIsInstance(value, float)
+        self.assertNotIsInstance(value, Float10)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(Integer, AnyAtomicType))
+        self.assertTrue(issubclass(Integer, int))
+        self.assertTrue(issubclass(NegativeInteger, Integer))
+        self.assertTrue(issubclass(Short, AnyAtomicType))
+        self.assertFalse(issubclass(bool, Integer))
+        self.assertFalse(issubclass(float, Integer))
 
 
 class UntypedAtomicTest(unittest.TestCase):
@@ -207,8 +350,9 @@ class UntypedAtomicTest(unittest.TestCase):
             UntypedAtomic(None)
         self.assertEqual(str(err.exception), "None is not an atomic value")
 
-    def test_repr(self):
+    def test_string_representation(self):
         self.assertEqual(repr(UntypedAtomic(7)), "UntypedAtomic('7')")
+        self.assertEqual(str(UntypedAtomic(7)), '7')
 
     def test_eq(self):
         self.assertTrue(UntypedAtomic(-10) == UntypedAtomic(-10))
@@ -309,6 +453,18 @@ class UntypedAtomicTest(unittest.TestCase):
         self.assertRaises(TypeError, UntypedAtomic.validate, '10')
         self.assertRaises(TypeError, UntypedAtomic.validate, 10)
 
+    def test_isinstance(self):
+        value = UntypedAtomic('1')
+        self.assertIsInstance(value, UntypedAtomic)
+        self.assertIsInstance(value, AnyAtomicType)
+        self.assertNotIsInstance(value, StringProxy)
+        self.assertNotIsInstance(value, str)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(UntypedAtomic, AnyAtomicType))
+        self.assertFalse(issubclass(UntypedAtomic, StringProxy))
+        self.assertFalse(issubclass(UntypedAtomic, str))
+
 
 class DateTimeTypesTest(unittest.TestCase):
 
@@ -362,6 +518,22 @@ class DateTimeTypesTest(unittest.TestCase):
         dt = DateTime.fromstring('2000-10-07T00:00:00.100000')
         self.assertIsInstance(dt, DateTime)
         self.assertEqual(dt._dt, datetime.datetime(2000, 10, 7, microsecond=100000))
+
+    def test_tzname(self):
+        dt = DateTime.fromstring('2000-10-07T00:00:00')
+        self.assertIsNone(dt.tzname())
+        dt = DateTime.fromstring('2000-10-07T00:00:00Z')
+        self.assertEqual(dt.tzname(), 'Z')
+
+    def test_astimezone(self):
+        dt = DateTime.fromstring('2000-10-07T00:00:00')
+        self.assertIsInstance(dt.astimezone(), datetime.datetime)
+
+    def test_isocalendar(self):
+        dt = DateTime.fromstring('2000-10-07T00:00:00')
+        self.assertEqual(
+            dt.isocalendar(), (2000, 40, 6)
+        )
 
     def test_issue_36_fromstring_with_more_microseconds_digits(self):
         dt = DateTime.fromstring('2000-10-07T00:00:00.00090001')
@@ -430,7 +602,7 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertEqual(DateTime(-1, 10, 7).iso_year, '0000')
         self.assertEqual(DateTime10(-1, 10, 7).iso_year, '-0001')
 
-    def test_datetime_repr(self):
+    def test_datetime_string_representation(self):
         dt = DateTime.fromstring('2000-10-07T00:00:00')
         self.assertEqual(repr(dt), "DateTime(2000, 10, 7, 0, 0, 0)")
         self.assertEqual(str(dt), '2000-10-07T00:00:00')
@@ -458,7 +630,7 @@ class DateTimeTypesTest(unittest.TestCase):
         dt = DateTime.fromstring('0000-09-19T24:00:00Z')
         self.assertEqual(str(dt), '0000-09-20T00:00:00Z')
 
-    def test_date_repr(self):
+    def test_date_string_representation(self):
         dt = Date.fromstring('2000-10-07')
         self.assertEqual(repr(dt), "Date(2000, 10, 7)")
         self.assertEqual(str(dt), '2000-10-07')
@@ -479,7 +651,7 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertEqual(repr(dt), "Date10(-3, 1, 1)")
         self.assertEqual(str(dt), '-0003-01-01')
 
-    def test_gregorian_year_repr(self):
+    def test_gregorian_year_string_representation(self):
         dt = GregorianYear.fromstring('1991')
         self.assertEqual(repr(dt), "GregorianYear(1991)")
         self.assertEqual(str(dt), '1991')
@@ -492,7 +664,7 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertEqual(repr(dt), "GregorianYear10(-50)")
         self.assertEqual(str(dt), '-0050')
 
-    def test_gregorian_day_repr(self):
+    def test_gregorian_day_string_representation(self):
         dt = GregorianDay.fromstring('---31')
         self.assertEqual(repr(dt), "GregorianDay(31)")
         self.assertEqual(str(dt), '---31')
@@ -501,17 +673,17 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertEqual(repr(dt), "GregorianDay(5, tzinfo=Timezone(datetime.timedelta(0)))")
         self.assertEqual(str(dt), '---05Z')
 
-    def test_gregorian_month_repr(self):
+    def test_gregorian_month_string_representation(self):
         dt = GregorianMonth.fromstring('--09')
         self.assertEqual(repr(dt), "GregorianMonth(9)")
         self.assertEqual(str(dt), '--09')
 
-    def test_gregorian_month_day_repr(self):
+    def test_gregorian_month_day_string_representation(self):
         dt = GregorianMonthDay.fromstring('--07-23')
         self.assertEqual(repr(dt), "GregorianMonthDay(7, 23)")
         self.assertEqual(str(dt), '--07-23')
 
-    def test_gregorian_year_month_repr(self):
+    def test_gregorian_year_month_string_representation(self):
         dt = GregorianYearMonth.fromstring('-1890-12')
         self.assertEqual(repr(dt), "GregorianYearMonth(-1891, 12)")
         self.assertEqual(str(dt), '-1890-12')
@@ -520,7 +692,7 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertEqual(repr(dt), "GregorianYearMonth10(-50, 4)")
         self.assertEqual(str(dt), '-0050-04')
 
-    def test_time_repr(self):
+    def test_time_string_representation(self):
         dt = Time.fromstring('20:40:13')
         self.assertEqual(repr(dt), "Time(20, 40, 13)")
         self.assertEqual(str(dt), '20:40:13')
@@ -565,6 +737,10 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertFalse(Date.fromstring("-10000-01-02") == (1, 2, 3))  # Wrong type
         self.assertTrue(Date.fromstring("-10000-01-02") != (1, 2, 3))  # Wrong type
 
+        # Type mismatch: not comparable
+        self.assertFalse(GregorianYearMonth10(1989, 6) == GregorianMonthDay(11, 30))
+        self.assertTrue(GregorianYearMonth10(1989, 6) != GregorianMonthDay(11, 30))
+
     def test_lt_operator(self):
         mkdt = DateTime.fromstring
         mkdate = Date.fromstring
@@ -582,6 +758,9 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertRaises(TypeError, operator.lt, mkdt("2002-04-02T18:00:00+02:00"),
                           mkdate("2002-04-03"))
 
+        with self.assertRaises(TypeError):
+            mkdt("2002-04-02T12:00:00-01:00") < "2002-04-02T17:00:00-01:00"
+
     def test_le_operator(self):
         mkdt = DateTime.fromstring
         mkdate = Date.fromstring
@@ -596,6 +775,9 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertTrue(mkdt("-190000-01-01T10:00:00Z") <= mkdt("0100-01-01T10:00:00Z"))
         self.assertRaises(TypeError, operator.le, mkdt("2002-04-02T18:00:00+02:00"),
                           mkdate("2002-04-03"))
+
+        with self.assertRaises(TypeError):
+            mkdt("2002-04-02T12:00:00-01:00") <= "2002-04-02T17:00:00-01:00"
 
     def test_gt_operator(self):
         mkdt = DateTime.fromstring
@@ -612,6 +794,9 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertRaises(TypeError, operator.lt, mkdt("2002-04-02T18:00:00+02:00"),
                           mkdate("2002-04-03"))
 
+        with self.assertRaises(TypeError):
+            mkdt("2002-04-02T12:00:00-01:00") > "2002-04-02T17:00:00-01:00"
+
     def test_ge_operator(self):
         mkdt = DateTime.fromstring
         mkdate = Date.fromstring
@@ -627,6 +812,9 @@ class DateTimeTypesTest(unittest.TestCase):
         self.assertTrue(mkdt("15032-11-12T23:17:59Z") >= mkdt("15032-11-12T23:17:59Z"))
         self.assertRaises(TypeError, operator.le, mkdt("2002-04-02T18:00:00+02:00"),
                           mkdate("2002-04-03"))
+
+        with self.assertRaises(TypeError):
+            mkdt("2002-04-02T12:00:00-01:00") >= "2002-04-02T17:00:00-01:00"
 
     def test_fromdelta(self):
         self.assertIsNotNone(Date.fromstring('10000-02-28'))
@@ -829,6 +1017,26 @@ class DateTimeTypesTest(unittest.TestCase):
     def test_hashing(self):
         dt = DateTime.fromstring("2002-04-02T12:00:00-01:00")
         self.assertIsInstance(hash(dt), int)
+
+    def test_isinstance(self):
+        dt = DateTime.fromstring("2002-04-02T12:00:00-01:00")
+        self.assertIsInstance(dt, DateTime)
+        self.assertIsInstance(dt, DateTime10)
+        self.assertIsInstance(dt, AnyAtomicType)
+        self.assertNotIsInstance(dt, Date10)
+        self.assertNotIsInstance(dt, StringProxy)
+        self.assertNotIsInstance(dt, str)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(AbstractDateTime, AnyAtomicType))
+        self.assertTrue(issubclass(OrderedDateTime, AnyAtomicType))
+        self.assertTrue(issubclass(DateTime10, AnyAtomicType))
+        self.assertTrue(issubclass(Date10, AnyAtomicType))
+        self.assertTrue(issubclass(GregorianDay, AnyAtomicType))
+        self.assertTrue(issubclass(GregorianYearMonth, AnyAtomicType))
+        self.assertFalse(issubclass(DateTime10, Date10))
+        self.assertFalse(issubclass(DateTime10, StringProxy))
+        self.assertFalse(issubclass(DateTime10, str))
 
 
 class DurationTypesTest(unittest.TestCase):
@@ -1078,6 +1286,33 @@ class DurationTypesTest(unittest.TestCase):
     def test_hashing(self):
         self.assertIsInstance(hash(Duration(16)), int)
 
+    def test_isinstance(self):
+        delta = Duration(1)
+        self.assertIsInstance(delta, Duration)
+        self.assertIsInstance(delta, AnyAtomicType)
+        self.assertNotIsInstance(delta, YearMonthDuration)
+        self.assertNotIsInstance(delta, DayTimeDuration)
+        self.assertNotIsInstance(delta, DateTime10)
+
+        delta = YearMonthDuration(months=1)
+        self.assertIsInstance(delta, Duration)
+        self.assertIsInstance(delta, AnyAtomicType)
+        self.assertIsInstance(delta, YearMonthDuration)
+        self.assertNotIsInstance(delta, DayTimeDuration)
+        self.assertNotIsInstance(delta, DateTime10)
+
+        delta = DayTimeDuration(seconds=3600)
+        self.assertIsInstance(delta, Duration)
+        self.assertIsInstance(delta, AnyAtomicType)
+        self.assertNotIsInstance(delta, YearMonthDuration)
+        self.assertIsInstance(delta, DayTimeDuration)
+        self.assertNotIsInstance(delta, DateTime10)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(Duration, AnyAtomicType))
+        self.assertTrue(issubclass(YearMonthDuration, AnyAtomicType))
+        self.assertTrue(issubclass(DayTimeDuration, AnyAtomicType))
+
 
 class TimezoneTypeTest(unittest.TestCase):
 
@@ -1225,6 +1460,50 @@ class BinaryTypesTest(unittest.TestCase):
         self.assertNotEqual(HexBinary(b'F859'), Base64Binary(b'YWxwaGE='))
         self.assertEqual(HexBinary(b'F859'), UntypedAtomic(HexBinary(b'F859')))
 
+    def test_less_than(self):
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') < Base64Binary(b'YWxwaGE=')
+
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') < HexBinary(b'F859')
+
+        self.assertLess(HexBinary(b'F858', ordered=True), HexBinary(b'F859'))
+        self.assertFalse(HexBinary(b'F859', ordered=True) < HexBinary(b'F859'))
+        self.assertFalse(HexBinary(b'F859', ordered=True) < HexBinary(b'F858'))
+
+    def test_less_or_equal(self):
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') <= Base64Binary(b'YWxwaGE=')
+
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') <= HexBinary(b'F859')
+
+        self.assertLessEqual(HexBinary(b'F859', ordered=True), HexBinary(b'F859'))
+        self.assertLessEqual(HexBinary(b'F858', ordered=True), HexBinary(b'F859'))
+        self.assertFalse(HexBinary(b'F859', ordered=True) <= HexBinary(b'F858'))
+
+    def test_greater_than(self):
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') > Base64Binary(b'YWxwaGE=')
+
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') > HexBinary(b'F859')
+
+        self.assertGreater(HexBinary(b'F859', ordered=True), HexBinary(b'F858'))
+        self.assertFalse(HexBinary(b'F859', ordered=True) > HexBinary(b'F859'))
+        self.assertFalse(HexBinary(b'F858', ordered=True) > HexBinary(b'F859'))
+
+    def test_greater_or_equal(self):
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') >= Base64Binary(b'YWxwaGE=')
+
+        with self.assertRaises(TypeError):
+            _ = HexBinary(b'F859') >= HexBinary(b'F859')
+
+        self.assertGreaterEqual(HexBinary(b'F859', ordered=True), HexBinary(b'F859'))
+        self.assertGreaterEqual(HexBinary(b'F859', ordered=True), HexBinary(b'F858'))
+        self.assertFalse(HexBinary(b'F858', ordered=True) >= HexBinary(b'F859'))
+
     def test_validate(self):
         self.assertIsNone(Base64Binary.validate(Base64Binary(b'YWxwaGE=')))
         self.assertIsNone(Base64Binary.validate(b'YWxwaGE='))
@@ -1259,6 +1538,32 @@ class BinaryTypesTest(unittest.TestCase):
             if platform.python_implementation() != 'PyPy':
                 raise
 
+    def test_isinstance(self):
+        value = Base64Binary(b'YWxwaGE=')
+        self.assertIsInstance(value, Base64Binary)
+        self.assertIsInstance(value, AnyAtomicType)
+        self.assertNotIsInstance(value, HexBinary)
+        self.assertNotIsInstance(value, StringProxy)
+        self.assertNotIsInstance(value, bytes)
+
+        value = HexBinary(b'F859')
+        self.assertIsInstance(value, HexBinary)
+        self.assertIsInstance(value, AnyAtomicType)
+        self.assertNotIsInstance(value, Base64Binary)
+        self.assertNotIsInstance(value, StringProxy)
+        self.assertNotIsInstance(value, bytes)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(Base64Binary, AnyAtomicType))
+        self.assertFalse(issubclass(Base64Binary, HexBinary))
+        self.assertFalse(issubclass(Base64Binary, StringProxy))
+        self.assertFalse(issubclass(Base64Binary, bytes))
+
+        self.assertTrue(issubclass(HexBinary, AnyAtomicType))
+        self.assertFalse(issubclass(HexBinary, Base64Binary))
+        self.assertFalse(issubclass(HexBinary, StringProxy))
+        self.assertFalse(issubclass(HexBinary, bytes))
+
 
 class QNameTypesTest(unittest.TestCase):
 
@@ -1268,6 +1573,7 @@ class QNameTypesTest(unittest.TestCase):
         self.assertEqual(qname.local_name, 'foo')
         self.assertIsNone(qname.prefix)
         self.assertEqual(qname.expanded_name, 'foo')
+        self.assertEqual(qname.braced_uri_name, 'Q{}foo')
 
         with self.assertRaises(ValueError) as ctx:
             QName(None, 'tns:foo')
@@ -1282,6 +1588,7 @@ class QNameTypesTest(unittest.TestCase):
         self.assertEqual(qname.local_name, 'foo')
         self.assertIsNone(qname.prefix)
         self.assertEqual(qname.expanded_name, '{http://xpath.test/ns}foo')
+        self.assertEqual(qname.braced_uri_name, 'Q{http://xpath.test/ns}foo')
 
         qname = QName('http://xpath.test/ns', 'tst:foo')
         self.assertEqual(qname.namespace, 'http://xpath.test/ns')
@@ -1317,6 +1624,20 @@ class QNameTypesTest(unittest.TestCase):
             _ = qname1 == 1
         self.assertIn('cannot compare', str(ctx.exception))
 
+    def test_isinstance(self):
+        qname = QName('http://xpath.test/ns', 'tst:foo')
+        self.assertIsInstance(qname, QName)
+        self.assertIsInstance(qname, AnyAtomicType)
+        self.assertNotIsInstance(qname, Notation)
+        self.assertNotIsInstance(qname, StringProxy)
+        self.assertNotIsInstance(qname, str)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(QName, AnyAtomicType))
+        self.assertFalse(issubclass(QName, Notation))
+        self.assertFalse(issubclass(QName, StringProxy))
+        self.assertFalse(issubclass(QName, str))
+
     def test_notation(self):
         with self.assertRaises(TypeError) as ec:
             Notation(None, 'foo')
@@ -1334,6 +1655,16 @@ class QNameTypesTest(unittest.TestCase):
 
         self.assertEqual(hash(notation), hash(('http://xpath.test/ns1', 'foo')))
 
+        self.assertIsInstance(notation, Notation)
+        self.assertIsInstance(notation, AnyAtomicType)
+        self.assertNotIsInstance(notation, StringProxy)
+        self.assertNotIsInstance(notation, str)
+
+        self.assertTrue(issubclass(Notation, AnyAtomicType))
+        self.assertFalse(issubclass(Notation, QName))
+        self.assertFalse(issubclass(Notation, StringProxy))
+        self.assertFalse(issubclass(Notation, str))
+
 
 class AnyUriTest(unittest.TestCase):
 
@@ -1349,6 +1680,7 @@ class AnyUriTest(unittest.TestCase):
 
     def test_string_representation(self):
         self.assertEqual(repr(AnyURI('http://xpath.test')), "AnyURI('http://xpath.test')")
+        self.assertEqual(str(AnyURI('http://xpath.test')), 'http://xpath.test')
 
     def test_bool_value(self):
         self.assertTrue(bool(AnyURI('http://xpath.test')))
@@ -1397,19 +1729,35 @@ class AnyUriTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             AnyURI.validate('http:://xpath.test')
 
+        with self.assertRaises(ValueError):
+            AnyURI.validate('http://[xpath.test')
+
+    def test_isinstance(self):
+        uri = AnyURI('http://xpath.test')
+        self.assertIsInstance(uri, AnyURI)
+        self.assertIsInstance(uri, AnyAtomicType)
+        self.assertNotIsInstance(uri, StringProxy)
+        self.assertNotIsInstance(uri, str)
+
+    def test_issubclass(self):
+        self.assertTrue(issubclass(AnyURI, AnyAtomicType))
+        self.assertFalse(issubclass(AnyURI, StringProxy))
+        self.assertFalse(issubclass(AnyURI, str))
+
 
 class TypeProxiesTest(unittest.TestCase):
 
-    def test_instance_check(self):
+    def test_numeric_proxy(self):
         self.assertIsInstance(10, NumericProxy)
         self.assertIsInstance(17.8, NumericProxy)
         self.assertIsInstance(Decimal('18.12'), NumericProxy)
         self.assertNotIsInstance(True, NumericProxy)
         self.assertNotIsInstance(Duration.fromstring('P1Y'), NumericProxy)
 
-        self.assertIsInstance(10, ArithmeticProxy)
+        self.assertEqual(NumericProxy(), 0.0)
+        self.assertEqual(NumericProxy(9), 9.0)
+        self.assertEqual(NumericProxy('49'), 49.0)
 
-    def test_subclass_check(self):
         self.assertFalse(issubclass(bool, NumericProxy))
         self.assertFalse(issubclass(str, NumericProxy))
         self.assertTrue(issubclass(int, NumericProxy))
@@ -1417,20 +1765,18 @@ class TypeProxiesTest(unittest.TestCase):
         self.assertTrue(issubclass(Decimal, NumericProxy))
         self.assertFalse(issubclass(DateTime10, NumericProxy))
 
+    def test_arithmetic_proxy(self):
+        self.assertIsInstance(10, ArithmeticProxy)
+
+        self.assertEqual(ArithmeticProxy(), 0.0)
+        self.assertEqual(ArithmeticProxy(8.0), 8.0)
+        self.assertEqual(ArithmeticProxy('81.0'), 81.0)
+
         self.assertFalse(issubclass(bool, ArithmeticProxy))
         self.assertFalse(issubclass(str, ArithmeticProxy))
         self.assertTrue(issubclass(int, ArithmeticProxy))
         self.assertTrue(issubclass(float, ArithmeticProxy))
         self.assertTrue(issubclass(Decimal, ArithmeticProxy))
-
-    # noinspection PyArgumentList
-    def test_instance_build(self):
-        self.assertEqual(NumericProxy(), 0.0)
-        self.assertEqual(NumericProxy(9), 9.0)
-        self.assertEqual(NumericProxy('49'), 49.0)
-        self.assertEqual(ArithmeticProxy(), 0.0)
-        self.assertEqual(ArithmeticProxy(8.0), 8.0)
-        self.assertEqual(ArithmeticProxy('81.0'), 81.0)
 
     def test_boolean_proxy(self):
         self.assertTrue(BooleanProxy(1))
@@ -1447,6 +1793,16 @@ class TypeProxiesTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             BooleanProxy.validate('2')
+
+        self.assertIsInstance(False, BooleanProxy)
+        self.assertIsInstance(True, BooleanProxy)
+        self.assertNotIsInstance(0, BooleanProxy)
+        self.assertNotIsInstance(1, BooleanProxy)
+        self.assertNotIsInstance('0', BooleanProxy)
+        self.assertNotIsInstance('1', BooleanProxy)
+
+        self.assertTrue(issubclass(BooleanProxy, AnyAtomicType))
+        self.assertFalse(issubclass(BooleanProxy, int))
 
     def test_decimal_proxy(self):
         self.assertIsInstance(DecimalProxy(20.0), Decimal)
@@ -1481,6 +1837,17 @@ class TypeProxiesTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             DecimalProxy.validate(True)
 
+        self.assertIsInstance(1, DecimalProxy)
+        self.assertIsInstance(-5, DecimalProxy)
+        self.assertIsInstance(Decimal('9.0'), DecimalProxy)
+        self.assertIsInstance(Integer(-5), DecimalProxy)
+        self.assertNotIsInstance(True, DecimalProxy)
+        self.assertNotIsInstance(1.0, DecimalProxy)
+        self.assertNotIsInstance('1', DecimalProxy)
+
+        self.assertTrue(issubclass(DecimalProxy, AnyAtomicType))
+        self.assertFalse(issubclass(DecimalProxy, int))
+
     def test_double_proxy(self):
         self.assertIsInstance(DoubleProxy10(20), float)
 
@@ -1510,65 +1877,33 @@ class TypeProxiesTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             DoubleProxy10.validate('six')
 
+        self.assertIsInstance(1.0, DoubleProxy10)
+        self.assertIsInstance(-5.9, DoubleProxy10)
+        self.assertNotIsInstance(Decimal('9.0'), DoubleProxy10)
+        self.assertNotIsInstance(Integer(-5), DoubleProxy10)
+        self.assertNotIsInstance(True, DoubleProxy10)
+        self.assertNotIsInstance(1, DoubleProxy10)
+        self.assertNotIsInstance('1', DoubleProxy10)
+
+        self.assertTrue(issubclass(DoubleProxy10, AnyAtomicType))
+        self.assertFalse(issubclass(DoubleProxy10, float))
+
     def test_string_proxy(self):
         self.assertIsInstance(StringProxy(20), str)
         self.assertIsNone(StringProxy.validate('alpha'))
         with self.assertRaises(TypeError):
             StringProxy.validate(b'alpha')
 
+        self.assertIsInstance('abc', StringProxy)
+        self.assertIsInstance(NormalizedString('abc'), StringProxy)
+        self.assertNotIsInstance(Decimal('9.0'), StringProxy)
+        self.assertNotIsInstance(Integer(-5), StringProxy)
+        self.assertNotIsInstance(True, StringProxy)
+        self.assertNotIsInstance(1, StringProxy)
+        self.assertNotIsInstance(1.0, StringProxy)
 
-@unittest.skipIf(xmlschema is None, "xmlschema library required.")
-class AtomicValuesTest(unittest.TestCase):
-
-    def test_get_atomic_value(self):
-        schema = xmlschema.XMLSchema(dedent("""\
-            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
-              <xs:element name="a" type="aType"/>
-              <xs:complexType name="aType">
-                <xs:sequence>
-                  <xs:element name="b1" type="xs:int"/>
-                  <xs:element name="b2" type="xs:boolean"/>
-                </xs:sequence>
-              </xs:complexType>
-
-              <xs:element name="b" type="xs:int"/>
-              <xs:element name="c"/>
-
-              <xs:element name="d" type="dType"/>
-              <xs:simpleType name="dType">
-                <xs:restriction base="xs:float"/>
-              </xs:simpleType>
-
-              <xs:element name="e" type="eType"/>
-              <xs:simpleType name="eType">
-                <xs:union memberTypes="xs:string xs:integer xs:boolean"/>
-              </xs:simpleType>
-            </xs:schema>"""))
-
-        self.assertEqual(get_atomic_value(schema.elements['d'].type), UntypedAtomic('1'))
-
-        with self.assertRaises(AttributeError):
-            value = get_atomic_value(schema)
-
-        value = get_atomic_value(schema.elements['a'].type)
-        self.assertIsInstance(value, UntypedAtomic)
-        self.assertEqual(value, UntypedAtomic(value='1'))
-
-        value = get_atomic_value(schema.elements['b'].type)
-        self.assertIsInstance(value, int)
-        self.assertEqual(value, 1)
-
-        value = get_atomic_value(schema.elements['c'].type)
-        self.assertIsInstance(value, UntypedAtomic)
-        self.assertEqual(value, UntypedAtomic(value='1'))
-
-        value = get_atomic_value(schema.elements['d'].type)
-        self.assertIsInstance(value, float)
-        self.assertEqual(value, 1.0)
-
-        value = get_atomic_value(schema.elements['e'].type)
-        self.assertIsInstance(value, UntypedAtomic)
-        self.assertEqual(value, UntypedAtomic(value='1'))
+        self.assertTrue(issubclass(StringProxy, AnyAtomicType))
+        self.assertFalse(issubclass(StringProxy, str))
 
 
 if __name__ == '__main__':

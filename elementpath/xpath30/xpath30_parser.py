@@ -85,3 +85,17 @@ class XPath30Parser(XPath2Parser):
 
             if None in decimal_formats:
                 self.decimal_formats[None].update(decimal_formats[None])
+
+    def __repr__(self) -> str:
+        args = []
+        if self.decimal_formats != self.__class__.decimal_formats:
+            args.append(f'decimal_formats={self.decimal_formats!r}')
+        if not self.defuse_xml:
+            args.append('defuse_xml=False')
+        if not args:
+            return super().__repr__()
+
+        repr_string = super().__repr__()[:-1]
+        if repr_string.endswith('('):
+            return f"{repr_string}{', '.join(args)})"
+        return f"{repr_string}, {', '.join(args)})"

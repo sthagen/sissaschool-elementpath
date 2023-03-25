@@ -125,6 +125,15 @@ class LookupOperatorToken(XPathToken):
             # in a list of function arguments.
             self.lbp = self.rbp = 0
 
+    @property
+    def source(self) -> str:
+        if not self:
+            return '?'
+        elif len(self) == 1:
+            return f'?{self[0].source}'
+        else:
+            return f'{self[0].source}?{self[1].source}'
+
     def nud(self):
         try:
             self.parser.expected_next('(name)', '(integer)', '(', '*')
@@ -174,10 +183,12 @@ class LookupOperatorToken(XPathToken):
                     for value in item.values(context):
                         yield from iter_sequence(value)
                 elif symbol in ('(name)', '(integer)'):
-                    yield from iter_sequence(item(context, self[-1].value))
+                    yield from iter_sequence(item(self[-1].value, context=context))
                 elif symbol == '(':
                     for value in self[-1].select(context):
-                        yield from iter_sequence(item(context, self.data_value(value)))
+                        yield from iter_sequence(
+                            item(self.data_value(value), context=context)
+                        )
 
             elif isinstance(item, XPathArray):
                 if symbol == '*':
@@ -185,10 +196,10 @@ class LookupOperatorToken(XPathToken):
                 elif symbol == '(name)':
                     raise self.error('XPTY0004')
                 elif symbol == '(integer)':
-                    yield item(context, self[-1].value)
+                    yield item(self[-1].value, context=context)
                 elif symbol == '(':
                     for value in self[-1].select(context):
-                        yield item(context, self.data_value(value))
+                        yield item(self.data_value(value), context=context)
 
             elif not item and isinstance(item, list):
                 continue
@@ -231,4 +242,4 @@ def evaluate_arrow_operator(self, context=None):
         tokens.extend(self[2][0].get_argument_tokens())
     func = self[1].get_function(context, arity=len(tokens))
     arguments = [tk.evaluate(context) for tk in tokens]
-    return func(context, *arguments)
+    return func(*arguments, context=context)

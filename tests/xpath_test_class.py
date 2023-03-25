@@ -109,16 +109,18 @@ class XPathTestCase(unittest.TestCase):
         :param path: an XPath expression.
         :param expected: the expected result string.
         """
-        self.assertEqual(self.parser.parse(path).tree, expected)
+        token = self.parser.parse(path)
+        self.assertEqual(token.tree, expected)
 
-    def check_source(self, path, expected):
+    def check_source(self, path, expected=None):
         """
         Checks the source representation of a parsed path.
 
         :param path: an XPath expression.
         :param expected: the expected result string.
         """
-        self.assertEqual(self.parser.parse(path).source, expected)
+        token = self.parser.parse(path)
+        self.assertEqual(token.source, expected or path)
 
     def check_value(self, path, expected=None, context=None):
         """
