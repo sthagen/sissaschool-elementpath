@@ -11,8 +11,6 @@ elementpath
 .. image:: https://img.shields.io/badge/License-MIT-blue.svg
    :alt: MIT License
    :target: https://lbesson.mit-license.org/
-.. image:: https://travis-ci.org/sissaschool/elementpath.svg?branch=master
-   :target: https://travis-ci.org/sissaschool/elementpath
 .. image:: https://img.shields.io/pypi/dm/elementpath.svg
    :target: https://pypi.python.org/pypi/elementpath/
 
@@ -110,7 +108,7 @@ extending language implementations. Also the token class has been generalized us
 as base class. See *tdop.py* for the basic internal classes and *xpath1_parser.py* for extensions
 and for a basic usage of the parser.
 
-If you like you can use the basic parser and tokens provided by the *tdop_parser.py* module to
+If you like you can use the basic parser and tokens provided by the *tdop.py* module to
 implement other types of parsers (I think it could be also a funny exercise!).
 
 
