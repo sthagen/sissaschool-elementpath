@@ -11,7 +11,6 @@
 """
 XPath 1.0 implementation - part 3 (functions)
 """
-import sys
 import math
 import decimal
 
@@ -37,10 +36,9 @@ def select_node_kind_test(self, context=None):
         raise self.missing_context()
 
     for item in context.iter_children_or_self():
-        if item is None:
-            yield context.root
-        elif isinstance(item, XPathNode):
-            yield item
+        if isinstance(item, XPathNode):
+            if not isinstance(item, DocumentNode) or item is context.root:
+                yield item
 
 
 @method('node')
@@ -409,12 +407,7 @@ def evaluate_sum_function(self, context=None):
         return sum(values) if len(values) > 1 else values[0]
     elif all(isinstance(x, DayTimeDuration) for x in values) or \
             all(isinstance(x, YearMonthDuration) for x in values):
-        if sys.version_info >= (3, 8):
-            return sum(values[1:], start=values[0])
-        result = values[0]
-        for val in values[1:]:
-            result += val
-        return result
+        return sum(values[1:], start=values[0])
     elif any(isinstance(x, Duration) for x in values):
         raise self.error('FORG0006', 'invalid sum of duration values')
     elif any(isinstance(x, (StringProxy, AnyURI)) for x in values):

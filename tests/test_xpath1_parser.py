@@ -423,7 +423,7 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
             # Skip lxml test because lxml's XPath doesn't include document root
             self.check_selector("//self::node()", document, [document, root, 'Dickens'])
             self.check_selector("/self::node()", document, [document])
-            self.check_selector("/self::node()", root, [root])
+            self.check_selector("/self::node()", root, [])
 
         self.check_selector("//self::text()", root, ['Dickens'])
 
@@ -431,9 +431,7 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         self.check_select("node()", [context.root.getroot()], context)
 
         context = XPathContext(root)
-        context.item = None
-        # lxml differs: doesn't consider the document position even if select from an ElementTree
-        self.check_value("/self::node()", expected=[context.root], context=context)
+        self.check_value("/self::node()", expected=[], context=context)
 
         context.item = 1
         self.check_value("self::node()", expected=[], context=context)
@@ -1653,6 +1651,39 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         """))
 
         self.check_selector("//target[name=//var/name]", root, expected=[root[0]])
+
+    def test_get_function(self):
+        func = self.parser.get_function('fn:true', 0)
+        self.assertEqual("'true' function", str(func))
+        self.assertTrue(func())
+
+        with self.assertRaises(NameError) as ctx:
+            self.parser.get_function('foo', 1)
+        self.assertIn("unknown function 'foo'", str(ctx.exception))
+
+        with self.assertRaises(TypeError) as ctx:
+            self.parser.get_function('fn:true', 1)
+        self.assertIn('unknown function true#1', str(ctx.exception))
+
+        func = self.parser.get_function('fn:false', 0)
+        self.assertEqual("'false' function", str(func))
+        self.assertFalse(func())
+
+        func = self.parser.get_function('concat', 2)
+        self.assertEqual("'concat' function", str(func))
+        self.assertEqual(func('foo', 1), 'foo1')
+
+        with self.assertRaises(TypeError) as ctx:
+            func('foo')
+        self.assertIn('missing required arguments', str(ctx.exception))
+
+        with self.assertRaises(TypeError) as ctx:
+            func('foo', 1, 2)
+        self.assertIn('too many arguments', str(ctx.exception))
+
+        func = self.parser.get_function('concat', 4)
+        self.assertEqual("'concat' function", str(func))
+        self.assertEqual(func('foo', 1, ' bar', 2), 'foo1 bar2')
 
 
 @unittest.skipIf(lxml_etree is None, "The lxml library is not installed")

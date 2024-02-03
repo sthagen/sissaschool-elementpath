@@ -2,6 +2,13 @@
 CHANGELOG
 *********
 
+`v4.2.0`_ (2024-02-03)
+======================
+* Drop support for Python 3.7
+* Add *uri* and *fragment* options to dynamic context
+* Make context root node not mandatory (issue #63)
+* Add function objects constructor (issue #70)
+
 `v4.1.5`_ (2023-07-25)
 ======================
 * Fix typed value of ElementNode() if self.elem.text is None
@@ -435,3 +442,4 @@ CHANGELOG
 .. _v4.1.3: https://github.com/sissaschool/elementpath/compare/v4.1.2...v4.1.3
 .. _v4.1.4: https://github.com/sissaschool/elementpath/compare/v4.1.3...v4.1.4
 .. _v4.1.5: https://github.com/sissaschool/elementpath/compare/v4.1.4...v4.1.5
+.. _v4.2.0: https://github.com/sissaschool/elementpath/compare/v4.1.5...v4.2.0

@@ -7,7 +7,9 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-from urllib.parse import urlparse
+from importlib import import_module
+from urllib.parse import urljoin
+from types import ModuleType
 from typing import cast, Any, Dict, Iterator, List, MutableMapping, Optional, Tuple, Union
 
 from .datatypes import UntypedAtomic, get_atomic_value, AtomicValueType
@@ -16,10 +18,10 @@ from .namespaces import XML_NAMESPACE, XML_BASE, XSI_NIL, \
     XML_ID, XSD_IDREF, XSD_IDREFS
 from .protocols import ElementProtocol, DocumentProtocol, XsdElementProtocol, \
     XsdAttributeProtocol, XsdTypeProtocol, XsdSchemaProtocol
-from .helpers import match_wildcard
-from .etree import etree_iter_strings
+from .helpers import match_wildcard, is_absolute_uri
+from .etree import etree_iter_strings, is_etree_element, is_etree_document
 
-__all__ = ['SchemaElemType', 'ChildNodeType', 'ElementMapType',
+__all__ = ['is_xpath_node', 'SchemaElemType', 'ChildNodeType', 'ElementMapType',
            'XPathNode', 'AttributeNode', 'NamespaceNode', 'TextNode',
            'CommentNode', 'ProcessingInstructionNode', 'ElementNode',
            'LazyElementNode', 'SchemaElementNode', 'DocumentNode']
@@ -56,7 +58,7 @@ class XPathNode:
 
     @property
     def base_uri(self) -> Optional[str]:
-        return None
+        return self.parent.base_uri if self.parent is not None else None
 
     @property
     def document_uri(self) -> Optional[str]:
@@ -97,6 +99,10 @@ class XPathNode:
     # Other common attributes, properties and methods
     value: Any
     position: int  # for document total order
+
+    @property
+    def root_node(self, namespace: Optional[str] = None) -> 'XPathNode':
+        return self if self.parent is None else self.parent.root_node
 
     def is_schema_node(self) -> Optional[bool]:
         return None
@@ -296,12 +302,6 @@ class TextNode(XPathNode):
         return '%s(value=%r)' % (self.__class__.__name__, self.value)
 
     @property
-    def base_uri(self) -> Optional[str]:
-        if isinstance(self.parent, ElementNode):
-            return self.parent.elem.get(XML_BASE)
-        return None
-
-    @property
     def string_value(self) -> str:
         return self.value
 
@@ -346,12 +346,6 @@ class CommentNode(XPathNode):
     @property
     def value(self) -> ElementProtocol:
         return self.elem
-
-    @property
-    def base_uri(self) -> Optional[str]:
-        if self.parent is not None:
-            return self.parent.base_uri
-        return None
 
     @property
     def string_value(self) -> str:
@@ -399,12 +393,6 @@ class ProcessingInstructionNode(XPathNode):
         return self.elem
 
     @property
-    def base_uri(self) -> Optional[str]:
-        if self.parent is not None:
-            return self.parent.base_uri
-        return None
-
-    @property
     def name(self) -> str:
         try:
             # an lxml PI
@@ -448,8 +436,10 @@ class ElementNode(XPathNode):
     _namespace_nodes: Optional[List['NamespaceNode']]
     _attributes: Optional[List['AttributeNode']]
 
+    uri: Optional[str] = None
+
     __slots__ = 'nsmap', 'elem', 'xsd_type', 'elements', \
-                '_namespace_nodes', '_attributes', 'children'
+                '_namespace_nodes', '_attributes', 'children', '__dict__'
 
     def __init__(self,
                  elem: Union[ElementProtocol, SchemaElemType],
@@ -511,7 +501,20 @@ class ElementNode(XPathNode):
 
     @property
     def base_uri(self) -> Optional[str]:
-        return self.elem.get(XML_BASE)
+        base_uri = self.elem.get(XML_BASE)
+        if isinstance(base_uri, str):
+            base_uri = base_uri.strip()
+        elif base_uri is not None:
+            base_uri = ''
+        elif self.uri is not None:
+            base_uri = self.uri.strip()
+
+        if self.parent is None:
+            return base_uri
+        elif base_uri is None:
+            return self.parent.base_uri
+        else:
+            return urljoin(self.parent.base_uri or '', base_uri)
 
     @property
     def nilled(self) -> bool:
@@ -704,10 +707,13 @@ class DocumentNode(XPathNode):
     kind = 'document'
     elements: Dict[ElementProtocol, ElementNode]
 
-    __slots__ = 'document', 'elements', 'children'
+    __slots__ = 'document', 'uri', 'elements', 'children'
 
-    def __init__(self, document: DocumentProtocol, position: int = 1) -> None:
+    def __init__(self, document: DocumentProtocol,
+                 uri: Optional[str] = None,
+                 position: int = 1) -> None:
         self.document = document
+        self.uri = uri
         self.parent = None
         self.position = position
         self.elements = {}
@@ -718,17 +724,7 @@ class DocumentNode(XPathNode):
 
     @property
     def base_uri(self) -> Optional[str]:
-        if not self.children:
-            # Fallback for not built documents
-            return self.document.getroot().get(XML_BASE)
-
-        for child in self.children:
-            if isinstance(child, ElementNode):
-                base_uri = child.elem.get(XML_BASE)
-                if base_uri is not None:
-                    return base_uri
-        else:
-            return None
+        return self.uri.strip() if self.uri is not None else None
 
     def getroot(self) -> ElementNode:
         for child in self.children:
@@ -797,35 +793,72 @@ class DocumentNode(XPathNode):
 
     @property
     def document_uri(self) -> Optional[str]:
-        base_uri = self.base_uri
-        if base_uri is None:
+        if self.uri is not None and is_absolute_uri(self.uri):
+            return self.uri.strip()
+        else:
             return None
 
-        try:
-            parts = urlparse(base_uri)
-        except ValueError:
-            pass
-        else:
-            if parts.scheme and parts.netloc or parts.path.startswith('/'):
-                return base_uri
-        return None
-
     def is_extended(self) -> bool:
-        if self.document.getroot() is None:
+        """
+        Returns `True` if the document node cannot be represented with an
+        ElementTree structure, `False` otherwise.
+        """
+        root = self.document.getroot()
+        if root is None or not is_etree_element(root):
             return True
-        elif len(self.children) <= 1:
-            return False
-        elif not hasattr(self.document.getroot(), 'itersiblings'):
-            return True  # an xml.etree.ElementTree structure
-
-        root = None
-        for e in self.children:
-            if isinstance(e, ElementNode):
-                if root is not None:
-                    return True
-                root = e
+        elif not self.children:
+            raise RuntimeError("Missing document root")
+        elif len(self.children) == 1:
+            return not isinstance(self.children[0], ElementNode)
+        elif not hasattr(root, 'itersiblings'):
+            return True  # an extended xml.etree.ElementTree structure
+        elif any(isinstance(x, TextNode) for x in root):
+            return True
         else:
-            return False
+            return sum(isinstance(x, ElementNode) for x in root) != 1
+
+    @classmethod
+    def from_element_node(cls, root_node: ElementNode, replace: bool = True) -> 'DocumentNode':
+        """
+        Build a `DocumentNode` from a tree based on an ElementNode.
+
+        :param root_node: the root element node.
+        :param replace: if `True` the root element is replaced by a document node. \
+        This is usually useful for extended data models (more element children, text nodes).
+        """
+        etree_module_name = root_node.elem.__class__.__module__
+        etree: ModuleType = import_module(etree_module_name)
+
+        assert root_node.elements is not None, "Not a root element node"
+        assert all(not isinstance(x, SchemaElementNode) for x in root_node.elements)
+        elements = cast(Dict[ElementProtocol, ElementNode], root_node.elements)
+
+        if replace:
+            document = etree.ElementTree()
+            if sum(isinstance(x, ElementNode) for x in root_node.children) == 1:
+                for child in root_node.children:
+                    if isinstance(child, ElementNode):
+                        document = etree.ElementTree(child.elem)
+                        break
+
+            document_node = cls(document, root_node.uri, root_node.position)
+            for child in root_node.children:
+                document_node.children.append(child)
+                child.parent = document_node
+
+            elements.pop(root_node, None)  # type: ignore[call-overload]
+            document_node.elements = elements
+            del root_node
+            return document_node
+
+        else:
+            document = etree.ElementTree(root_node.elem)
+            document_node = cls(document, root_node.uri, root_node.position - 1)
+            document_node.children.append(root_node)
+            root_node.parent = document_node
+            document_node.elements = elements
+
+        return document_node
 
 
 ###
@@ -875,7 +908,7 @@ class SchemaElementNode(ElementNode):
     The resulting structure can be a tree or a set of disjoint trees.
     With more roots only one of them is the schema node.
     """
-    __slots__ = '__dict__'
+    __slots__ = ()
 
     ref: Optional['SchemaElementNode'] = None
     elem: SchemaElemType
@@ -972,3 +1005,7 @@ class SchemaElementNode(ElementNode):
                     children = iterators.pop()
                 except IndexError:
                     return
+
+
+def is_xpath_node(obj: Any) -> bool:
+    return isinstance(obj, XPathNode) or is_etree_element(obj) or is_etree_document(obj)
