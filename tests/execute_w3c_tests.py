@@ -103,8 +103,6 @@ SKIP_TESTS = {
     # For XP30+
     'fn-root__K-NodeRootFunc-2',  # includes a XPath 3.0 fn:generate-id()
     'fn-codepoints-to-string__cbcl-codepoints-to-string-021',  # Too long ...
-    'fn-unparsed-text__fn-unparsed-text-038',  # Typo in filename
-    'fn-unparsed-text-lines__fn-unparsed-text-lines-038',  # Typo in filename
     'fn-serialize__serialize-xml-015b',  # Do not raise, attribute is good
     'fn-parse-xml-fragment__parse-xml-fragment-022-st',  # conflict with parse-xml-fragment-022
     'fn-for-each-pair__fn-for-each-pair-017',  # Requires PI and comments parsing
@@ -143,6 +141,10 @@ SKIP_TESTS = {
     'fn-json-doc__json-doc-032',  # 0 is not an instance of xs:double
     'fn-json-doc__json-doc-033',  # 0 (should be -0) is not an instance of xs:double
     'fn-function-lookup__fn-function-lookup-764',  # Error code should be FOQM0001
+}
+
+SKIP_XP20 = {
+    'fn-subsequence__fn-subsequence-mix-args-026',  # fn:tail is XP30+
 }
 
 # Tests that can be run only with lxml.etree
@@ -210,6 +212,7 @@ LXML_ONLY = {
     'prod-EQName__eqname-018',
     'prod-EQName__eqname-023',
     'prod-NamedFunctionRef__function-literal-262',
+    'fn-format-number__numberformat83',
 
     # XML declaration
     'fn-serialize__serialize-xml-029b',
@@ -802,8 +805,10 @@ class TestCase(object):
 
             if '.' in environment.sources:
                 root = environment.sources['.'].xml
+                root_uri = environment.sources['.'].uri
             else:
                 root = self.etree.XML("<empty/>")
+                root_uri = None
 
             if any(k.startswith('$') for k in environment.sources):
                 variables.update(
@@ -841,7 +846,7 @@ class TestCase(object):
             if self.calendar:
                 kwargs['default_calendar'] = self.calendar
 
-            context = XPathContext(root=root, **kwargs)
+            context = XPathContext(root=root, uri=root_uri, **kwargs)
 
         try:
             if with_xpath_nodes:
@@ -1556,6 +1561,10 @@ def main():
 
                 # Other test cases to skip for technical limitations
                 if test_case.name in SKIP_TESTS:
+                    count_skip += 1
+                    continue
+
+                if test_case.name in SKIP_XP20 and not args.xp30 and not args.xp31:
                     count_skip += 1
                     continue
 
