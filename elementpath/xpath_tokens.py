@@ -286,6 +286,8 @@ class XPathToken(Token[XPathTokenType]):
                 if context is None:
                     raise self.missing_context() from None
                 item = context.item if context.item is not None else context.root
+            elif isinstance(context, XPathSchemaContext):
+                return default
             elif required:
                 msg = "missing %s argument" % ordinal(index + 1)
                 raise self.error('XPST0017', msg) from None
@@ -311,7 +313,7 @@ class XPathToken(Token[XPathTokenType]):
                     raise self.error('XPTY0004', msg)
             else:
                 if item is None:
-                    if not required:
+                    if not required or isinstance(context, XPathSchemaContext):
                         return default
                     ord_arg = ordinal(index + 1)
                     msg = "A not empty sequence required for {} argument"
@@ -674,7 +676,7 @@ class XPathToken(Token[XPathTokenType]):
         returns the URI as xs:anyURI instance.
         :returns: the argument if it's an absolute URI, otherwise returns the URI
         obtained by the join o the base_uri of the static context with the
-        argument. Returns the argument if the base_uri is `None'.
+        argument. Returns the argument if the base_uri is `None`.
         """
         if not base_uri:
             base_uri = self.parser.base_uri
@@ -768,7 +770,10 @@ class XPathToken(Token[XPathTokenType]):
                 try:
                     timezone = Timezone.fromduration(timezone)
                 except ValueError as err:
-                    raise self.error('FODT0003', str(err)) from None
+                    if isinstance(context, XPathSchemaContext):
+                        timezone = Timezone.fromduration(DayTimeDuration(0))
+                    else:
+                        raise self.error('FODT0003', str(err)) from None
             if item is None:
                 return []
 
@@ -784,6 +789,8 @@ class XPathToken(Token[XPathTokenType]):
                     _item -= timezone.offset - _tzinfo.offset
                     _item -= DayTimeDuration.fromstring('P1D')
         except OverflowError as err:
+            if isinstance(context, XPathSchemaContext):
+                return _item
             raise self.error('FODT0001', str(err)) from None
 
         if not isinstance(_item, DayTimeDuration):
@@ -1213,7 +1220,7 @@ class XPathFunction(XPathToken):
     pattern = r'(?<!\$)\b[^\d\W][\w.\-\xb7\u0300-\u036F\u203F\u2040]*' \
               r'(?=\s*(?:\(\:.*\:\))?\s*\((?!\:))'
 
-    sequence_types: Tuple[str, ...] = ()
+    sequence_types: Union[List[str], Tuple[str, ...]] = ()
     "Sequence types of arguments and of the return value of the function."
 
     nargs: NargsType = None
@@ -1668,6 +1675,8 @@ class XPathMap(XPathFunction):
         if len(args) == 1 and isinstance(args[0], list) and len(args[0]) == 1:
             args = args[0][0],
         if len(args) != 1 or not isinstance(args[0], AnyAtomicType):
+            if isinstance(context, XPathSchemaContext):
+                return None
             raise self.error('XPST0003', 'exactly one atomic argument is expected')
 
         map_dict: Dict[Any, Any]

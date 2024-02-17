@@ -26,7 +26,7 @@ from ..namespaces import NamespacesType, XSD_NAMESPACE, XML_NAMESPACE, \
 from ..collations import UNICODE_COLLATION_BASE_URI, UNICODE_CODEPOINT_COLLATION
 from ..datatypes import UntypedAtomic, AtomicValueType, QName
 from ..xpath_tokens import NargsType, XPathToken, ProxyToken, XPathFunction, XPathConstructor
-from ..xpath_context import XPathContext
+from ..xpath_context import XPathContext, XPathSchemaContext
 from ..sequence_types import is_sequence_type, match_sequence_type
 from ..schema_proxy import AbstractSchemaProxy
 from ..xpath1 import XPath1Parser
@@ -284,6 +284,8 @@ class XPath2Parser(XPath1Parser):
             except ElementPathError:
                 raise
             except (TypeError, ValueError) as err:
+                if isinstance(context, XPathSchemaContext):
+                    return []
                 raise self.error('FORG0001', err) from None
 
         if not sequence_types:
@@ -329,6 +331,8 @@ class XPath2Parser(XPath1Parser):
             try:
                 return self_.parser.schema.cast_as(value, atomic_type_name)
             except (TypeError, ValueError) as err:
+                if isinstance(context, XPathSchemaContext):
+                    return []
                 raise self_.error('FORG0001', err)
 
         symbol = get_prefixed_name(atomic_type_name, self.namespaces)
@@ -512,13 +516,13 @@ class XPath2Parser(XPath1Parser):
         if root_token.label in ('sequence type', 'function test'):
             raise root_token.error('XPST0003', "not allowed in XPath expression")
 
-        if self.schema is None:
-            try:
-                root_token.evaluate()  # Static context evaluation
-            except MissingContextError:
-                pass
-        else:
-            # Static context evaluation with a dynamic schema context
+        try:
+            root_token.evaluate()  # Static context evaluation
+        except MissingContextError:
+            pass
+
+        if self.schema is not None:
+            # Tokens tree labeling with XSD types using a dynamic schema context
             context = self.schema.get_context()
             for _ in root_token.select(context):
                 pass

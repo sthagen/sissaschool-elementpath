@@ -22,8 +22,8 @@ except (ImportError, AttributeError):
     xmlschema = None
 
 
-@unittest.skipIf(xmlschema is None, "xmlschema library required.")
-class XMLSchemaProxyTest(unittest.TestCase):
+@unittest.skipIf(xmlschema is None, "xmlschema library required")
+class XMLSchemaContextTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -200,8 +200,11 @@ class XMLSchemaProxyTest(unittest.TestCase):
 
     def test_schema_variables(self):
         variable_types = {'a': 'item()', 'b': 'xs:integer?', 'c': 'xs:string'}
-        parser = XPath2Parser(default_namespace="http://xpath.test/ns",
-                              variable_types=variable_types)
+        parser = XPath2Parser(
+            default_namespace="http://xpath.test/ns",
+            variable_types=variable_types,
+            schema=self.schema1.xpath_proxy,
+        )
         context = XPathSchemaContext(self.schema1)
 
         token = parser.parse('$a')
@@ -240,6 +243,52 @@ class XMLSchemaProxyTest(unittest.TestCase):
 
         token = parser.parse("fn:idref('ID21256')")
         self.assertListEqual(token.evaluate(context), [])
+
+    def test_if_statement(self):
+        parser = XPath2Parser(default_namespace="http://xpath.test/ns")
+        context = XPathSchemaContext(self.schema1)
+
+        elem_a = self.schema1.elements['a']
+        elem_b1 = self.schema1.elements['a'].type.content[0]
+        elem_b2 = self.schema1.elements['a'].type.content[1]
+
+        token = parser.parse('if ($x > 1) then a/b1 else a/b2')
+        for tk in token.iter():
+            self.assertIsNone(tk.xsd_types)
+
+        result = token.evaluate(context)
+        self.assertListEqual(result, [context.root[0][1]])
+        self.assertIsNone(token.xsd_types)
+        self.assertIsNone(token[0].xsd_types)
+
+        for tk in token.iter():
+            if tk.value == 'a':
+                self.assertEqual(tk.xsd_types, {"{http://xpath.test/ns}a": elem_a.type})
+            elif tk.value == 'b1':
+                self.assertEqual(tk.xsd_types, {"b1": elem_b1.type})
+            elif tk.value == 'b2':
+                self.assertEqual(tk.xsd_types, {"b2": elem_b2.type})
+            else:
+                self.assertIsNone(tk.xsd_types)
+
+        token = parser.parse('if ($x > xs:date("2010-01-01")) then a/b1 else a/b2')
+        for tk in token.iter():
+            self.assertIsNone(tk.xsd_types)
+
+        result = token.evaluate(context)
+        self.assertListEqual(result, [context.root[0][1]])
+        self.assertIsNone(token.xsd_types)
+        self.assertIsNone(token[0].xsd_types)
+
+        for tk in token.iter():
+            if tk.value == 'a':
+                self.assertEqual(tk.xsd_types, {"{http://xpath.test/ns}a": elem_a.type})
+            elif tk.value == 'b1':
+                self.assertEqual(tk.xsd_types, {"b1": elem_b1.type})
+            elif tk.value == 'b2':
+                self.assertEqual(tk.xsd_types, {"b2": elem_b2.type})
+            else:
+                self.assertIsNone(tk.xsd_types)
 
 
 if __name__ == '__main__':
