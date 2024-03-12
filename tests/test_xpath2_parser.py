@@ -133,7 +133,9 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
         token = self.parser.parse('$var1')
         self.assertEqual(token.source, '$var1')
-        self.assertEqual(repr(token), f'_DollarSignOperator({self.parser})')
+        self.assertEqual(
+            repr(token), f"<{token.__class__.__name__} object at {hex(id(token))}>"
+        )
         self.assertEqual(str(token), '$var1 variable reference')
 
         context = XPathContext(root=root, variables={'var1': root[0]})

@@ -11,6 +11,7 @@ import json
 from decimal import Decimal, ROUND_UP
 from types import ModuleType
 from typing import cast, Any, Dict, Iterator, Iterable, Optional, Set, Union, Tuple
+from xml.etree import ElementTree
 
 from .exceptions import ElementPathError, xpath_error
 from .namespaces import XSLT_XQUERY_SERIALIZATION_NAMESPACE
@@ -19,6 +20,7 @@ from .datatypes import AnyAtomicType, AnyURI, AbstractDateTime, \
 from .xpath_nodes import XPathNode, ElementNode, AttributeNode, DocumentNode, \
     NamespaceNode, TextNode, CommentNode
 from .xpath_tokens import XPathToken, XPathMap, XPathArray
+from .protocols import EtreeElementProtocol, LxmlElementProtocol
 
 # XSLT and XQuery Serialization parameters
 SERIALIZATION_PARAMS = '{%s}serialization-parameters' % XSLT_XQUERY_SERIALIZATION_NAMESPACE
@@ -38,6 +40,8 @@ def get_serialization_params(params: Union[None, ElementNode, XPathMap] = None,
                              token: Optional[XPathToken] = None) -> Dict['str', Any]:
 
     kwargs: Dict[str, Any] = {}
+    character_map: Dict[str, str]
+
     if isinstance(params, XPathMap):
         if len(params[:]) > len(params.keys()):  # pragma: no cover
             raise xpath_error('SEPM0019', token=token)
@@ -132,7 +136,7 @@ def get_serialization_params(params: Union[None, ElementNode, XPathMap] = None,
                 kwargs[key] = value
 
     elif isinstance(params, ElementNode):
-        root = params.elem
+        root = cast(Union[EtreeElementProtocol, LxmlElementProtocol], params.elem)
         if root.tag != SERIALIZATION_PARAMS:
             msg = 'output:serialization-parameters tag expected'
             raise xpath_error('XPTY0004', msg, token)
@@ -182,7 +186,10 @@ def get_serialization_params(params: Union[None, ElementNode, XPathMap] = None,
                 kwargs['method'] = value if value != 'xhtml' else 'html'
 
             elif child.tag == SER_PARAM_INDENT:
-                value = child.attrib.get('value', '').strip()
+                value = child.attrib.get('value', '')
+                assert isinstance(value, str)
+
+                value = value.strip()
                 if value not in ('yes', 'no') or len(child.attrib) > 1:
                     raise xpath_error('SEPM0017', token=token)
 
@@ -197,7 +204,10 @@ def get_serialization_params(params: Union[None, ElementNode, XPathMap] = None,
             elif child.tag == SER_PARAM_NO_INDENT:
                 pass  # TODO param
             elif child.tag == SER_PARAM_STANDALONE:
-                value = child.attrib.get('value', '').strip()
+                value = child.attrib.get('value', '')
+                assert isinstance(value, str)
+
+                value = value.strip()
                 if value not in ('yes', 'no', 'omit') or len(child.attrib) > 1:
                     raise xpath_error('SEPM0017', token=token)
                 if value != 'omit':
@@ -254,7 +264,6 @@ def serialize_to_xml(elements: Iterable[Any],
                      token: Optional['XPathToken'] = None,
                      **params: Any) -> str:
     if etree_module is None:
-        from xml.etree import ElementTree
         etree_module = ElementTree
 
     item_separator = params.get('item_separator')
@@ -319,7 +328,6 @@ def serialize_to_json(elements: Iterable[Any],
                       token: Optional['XPathToken'] = None,
                       **params: Any) -> str:
     if etree_module is None:
-        from xml.etree import ElementTree
         etree_module = ElementTree
 
     class MapEncodingDict(dict):  # type: ignore[type-arg]

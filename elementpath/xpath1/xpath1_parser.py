@@ -23,7 +23,8 @@ from ..namespaces import NamespacesType, XML_NAMESPACE, XSD_NAMESPACE, \
     XPATH_FUNCTIONS_NAMESPACE
 from ..sequence_types import match_sequence_type
 from ..schema_proxy import AbstractSchemaProxy
-from ..xpath_tokens import NargsType, XPathToken, XPathAxis, XPathFunction, ProxyToken
+from ..xpath_tokens import NargsType, XPathToken, XPathAxis, XPathFunction, \
+    ProxyToken, ContextArgType
 
 
 class XPath1Parser(Parser[XPathToken]):
@@ -83,7 +84,7 @@ class XPath1Parser(Parser[XPathToken]):
             self.namespaces.update(namespaces)
         self.strict: bool = strict
 
-    def __repr__(self) -> str:
+    def __str__(self) -> str:
         args = []
         if self.namespaces != self.DEFAULT_NAMESPACES:
             args.append(str(self.other_namespaces))
@@ -247,13 +248,15 @@ class XPath1Parser(Parser[XPathToken]):
                 message = "Unmatched sequence type for variable {!r}".format(varname)
                 raise xpath_error('XPDY0050', message)
 
-    def get_function(self, name: str, arity: Optional[int]) -> XPathFunction:
+    def get_function(self, name: str, arity: Optional[int],
+                     context: ContextArgType = None) -> XPathFunction:
         """
-        Returns a XPathFunction object for direct usage.
+        Returns an XPathFunction object suitable for stand-alone usage.
 
         :param name: the name of the function.
         :param arity: the arity of the function object, must be compatible \
         with the signature of the XPath function.
+        :param context: an optional context to bound to the function.
         """
         if ':' not in name:
             qname = QName(XPATH_FUNCTIONS_NAMESPACE, f'fn:{name}')
@@ -269,17 +272,27 @@ class XPath1Parser(Parser[XPathToken]):
             else:
                 qname = QName(namespace, f'{prefix}:{name}')
 
-        token_class = self.symbol_table.get(name)
-        if token_class is None or not issubclass(token_class, XPathFunction):
+        if qname.expanded_name in self.symbol_table:
+            token_class = self.symbol_table[qname.expanded_name]
+        elif name in self.symbol_table:
+            token_class = self.symbol_table[name]
+        else:
             raise ElementPathNameError(f'unknown function {name!r}')
 
-        qname = QName(XPATH_FUNCTIONS_NAMESPACE, name)
+        if not issubclass(token_class, XPathFunction):
+            raise ElementPathNameError(f'{name!r} is not an XPath function')
+
+        if token_class.namespace != qname.namespace:
+            raise ElementPathNameError(f'namespace mismatch: {token_class.namespace}')
+
         try:
             func = token_class(self, nargs=arity)
         except TypeError:
             msg = f"unknown function {qname.qname}#{arity}"
             raise xpath_error('XPST0017', msg) from None
         else:
+            if context is not None:
+                func.context = context
             return func
 
 

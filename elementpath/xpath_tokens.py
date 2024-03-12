@@ -18,15 +18,17 @@ from copy import copy
 from decimal import Decimal
 from itertools import product
 from typing import TYPE_CHECKING, cast, Dict, Optional, List, Tuple, \
-    Union, Any, Iterable, Iterator, SupportsFloat, Type
+    Union, Any, Iterable, Iterator, SupportsFloat, Type, Callable
 import urllib.parse
 
 from .exceptions import ElementPathError, ElementPathValueError, \
     ElementPathTypeError, MissingContextError, xpath_error
 from .helpers import ordinal, get_double, split_function_test
+from .etree import is_etree_element, is_etree_document
 from .namespaces import XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, \
     XPATH_MATH_FUNCTIONS_NAMESPACE, XSD_SCHEMA, XSD_DECIMAL, \
     XSD_ANY_TYPE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE
+from .tree_builders import get_node_tree
 from .xpath_nodes import XPathNode, ElementNode, AttributeNode, \
     DocumentNode, NamespaceNode, SchemaElementNode
 from .datatypes import xsd10_atomic_types, AbstractDateTime, AnyURI, \
@@ -43,8 +45,9 @@ if TYPE_CHECKING:
     from .xpath1 import XPath1Parser
     from .xpath2 import XPath2Parser
     from .xpath30 import XPath30Parser
+    from .xpath31 import XPath31Parser
 
-    XPathParserType = Union[XPath1Parser, XPath2Parser, XPath30Parser]
+    XPathParserType = Union[XPath1Parser, XPath2Parser, XPath30Parser, XPath31Parser]
 else:
     XPathParserType = Any
 
@@ -77,7 +80,8 @@ XPathResultType = Union[
 ]
 
 XPathTokenType = Union['XPathToken', 'XPathAxis', 'XPathFunction', 'XPathConstructor']
-XPathFunctionArgType = Union[None, 'XPathToken', XPathNode, AtomicValueType,
+XPathFunctionArgType = Union[None, ElementProtocol, DocumentProtocol,
+                             'XPathToken', XPathNode, AtomicValueType,
                              List[Union['XPathToken', XPathNode, AtomicValueType]]]
 
 
@@ -1216,6 +1220,7 @@ class XPathFunction(XPathToken):
     """
     A token for processing XPath functions.
     """
+    __name__: str
     _name: Optional[QName] = None
     pattern = r'(?<!\$)\b[^\d\W][\w.\-\xb7\u0300-\u036F\u203F\u2040]*' \
               r'(?=\s*(?:\(\:.*\:\))?\s*\((?!\:))'
@@ -1227,9 +1232,9 @@ class XPathFunction(XPathToken):
     "Number of arguments: a single value or a couple with None that means unbounded."
 
     context: ContextArgType = None
-    "Dynamic context associated by function reference evaluation."
+    "Dynamic context associated by function reference evaluation or explicitly by a builder."
 
-    def __init__(self, parser: 'XPath1Parser', nargs: Optional[int] = None) -> None:
+    def __init__(self, parser: XPathParserType, nargs: Optional[int] = None) -> None:
         super().__init__(parser)
         if isinstance(nargs, int) and nargs != self.nargs:
             if nargs < 0:
@@ -1244,39 +1249,31 @@ class XPathFunction(XPathToken):
                 self.nargs = nargs
 
     def __repr__(self) -> str:
-        if self.nargs == self.__class__.nargs:
-            return '%s(%r)' % (self.__class__.__name__, self.parser)
-        return '%s(%r, %r)' % (self.__class__.__name__, self.parser, self.nargs)
+        qname = self.name
+        if qname is None:
+            return '<%s object at %#x>' % (self.__class__.__name__, id(self))
+        elif not isinstance(self.nargs, int):
+            return '<XPathFunction %s at %#x>' % (qname.qname, id(self))
+        return '<XPathFunction %s#%r at %#x>' % (qname.qname, self.nargs, id(self))
 
     def __str__(self) -> str:
-        namespace = self.namespace
-        if namespace is None or namespace == XPATH_FUNCTIONS_NAMESPACE:
+        if self.namespace is None:
             return f'{self.symbol!r} {self.label}'
-
-        for prefix, uri in self.parser.namespaces.items():
-            if uri == namespace:
-                return f"'{prefix}:{self.symbol}' {self.label}"
+        elif self.namespace == XPATH_FUNCTIONS_NAMESPACE:
+            return f"'fn:{self.symbol}' {self.label}"
         else:
-            return f"'Q{{{namespace}}}{self.symbol}' {self.label}"
+            for prefix, uri in self.parser.namespaces.items():
+                if uri == self.namespace:
+                    return f"'{prefix}:{self.symbol}' {self.label}"
+            else:
+                return f"'Q{{{self.namespace}}}{self.symbol}' {self.label}"
 
     def __call__(self, *args: XPathFunctionArgType,
                  context: ContextArgType = None) -> Any:
         self.check_arguments_number(len(args))
 
-        # Check provided argument with arity
-        if self.nargs is None or self.nargs == len(args):
-            pass
-        elif isinstance(self.nargs, tuple):
-            if len(args) < self.nargs[0]:
-                raise self.error('XPTY0004', "missing required arguments")
-            elif self.nargs[1] is not None and len(args) > self.nargs[1]:
-                raise self.error('XPTY0004', "too many arguments")
-        elif self.nargs > len(args):
-            raise self.error('XPTY0004', "missing required arguments")
-        else:
-            raise self.error('XPTY0004', "too many arguments")
+        context = copy(self.context or context)
 
-        context = copy(context)
         if self.label == 'partial function':
             for value, tk in zip(args, filter(lambda x: x.symbol == '?', self)):
                 if isinstance(value, XPathToken) and not isinstance(value, XPathFunction):
@@ -1288,7 +1285,24 @@ class XPathFunction(XPathToken):
             for value in args:
                 if isinstance(value, XPathToken):
                     self._items.append(value)
+                elif value is None or isinstance(value, (XPathNode, AnyAtomicType, list)):
+                    self._items.append(ValueToken(self.parser, value=value))
+                elif not is_etree_document(value) and not is_etree_element(value):
+                    raise self.error('XPTY0004', f"unexpected argument type {type(value)}")
                 else:
+                    # Accepts and wraps etree elements/documents, useful for external calls.
+                    if context is not None:
+                        value = context.get_context_item(
+                            cast(Union[ElementProtocol, DocumentProtocol], value),
+                            namespaces=context.namespaces,
+                            uri=self.parser.base_uri
+                        )
+                    else:
+                        value = get_node_tree(
+                            cast(Union[ElementProtocol, DocumentProtocol], value),
+                            namespaces=self.parser.namespaces,
+                            uri=self.parser.base_uri
+                        )
                     self._items.append(ValueToken(self.parser, value=value))
 
             if any(tk.symbol == '?' and not tk for tk in self._items):
@@ -1355,7 +1369,9 @@ class XPathFunction(XPathToken):
             return None
         elif self.label == 'partial function':
             return None
-        elif not self.namespace or self.namespace == XPATH_FUNCTIONS_NAMESPACE:
+        elif not self.namespace:
+            self._name = QName(None, self.symbol)
+        elif self.namespace == XPATH_FUNCTIONS_NAMESPACE:
             self._name = QName(XPATH_FUNCTIONS_NAMESPACE, 'fn:%s' % self.symbol)
         elif self.namespace == XSD_NAMESPACE:
             self._name = QName(XSD_NAMESPACE, 'xs:%s' % self.symbol)
@@ -1504,7 +1520,7 @@ class XPathFunction(XPathToken):
             return is_sequence_type_restriction(st1, st2)
 
     def to_partial_function(self) -> None:
-        """Convert a function to a partial function."""
+        """Convert an XPath function to a partial function."""
         nargs = len([tk and not tk for tk in self._items if tk.symbol == '?'])
         assert nargs, "a partial function requires at least a placeholder token"
 
@@ -1526,6 +1542,28 @@ class XPathFunction(XPathToken):
         self._name = None
         self.label = 'partial function'
         self.nargs = nargs
+
+    def as_function(self) -> Callable[..., Any]:
+        """
+        Wraps the XPath function instance into a standard function.
+        """
+        def wrapper(*args: XPathFunctionArgType, context: ContextArgType = None) -> Any:
+            return self.__call__(*args, context=context)
+
+        qname = self.name
+        if self.is_reference():
+            ref_part = f'#{self.nargs}'
+        else:
+            ref_part = ''
+
+        if qname is None:
+            name = f'<anonymous-function{ref_part}>'
+        else:
+            name = f'<{qname.qname}{ref_part}>'
+
+        wrapper.__name__ = name
+        wrapper.__qualname__ = wrapper.__qualname__[:-7] + name
+        return wrapper
 
     def _partial_evaluate(self, context: ContextArgType = None) -> Any:
         return [x for x in self._partial_select(context)]
@@ -1564,7 +1602,7 @@ class XPathMap(XPathFunction):
     _values: List[XPathToken]
     _nan_key: Optional[float] = None
 
-    def __init__(self, parser: 'XPath1Parser', items: Optional[Any] = None) -> None:
+    def __init__(self, parser: XPathParserType, items: Optional[Any] = None) -> None:
         super().__init__(parser)
         self._values = []
         if items is not None:
@@ -1589,7 +1627,11 @@ class XPathMap(XPathFunction):
             self._map = _map
 
     def __repr__(self) -> str:
-        return '%s(%r, %r)' % (self.__class__.__name__, self.parser, self._map)
+        if self._map is not None:
+            return f'<{self.__class__.__name__} object at {hex(id(self))}>'
+        return "<{} object (not evaluated constructor) at {}>".format(
+            self.__class__.__name__, hex(id(self))
+        )
 
     def __str__(self) -> str:
         if self._map is None:
@@ -1749,21 +1791,27 @@ class XPathArray(XPathFunction):
     pattern = r'(?<!\$)\barray(?=\s*(?:\(\:.*\:\))?\s*\{(?!\:))'
     _array: Optional[List[Any]] = None
 
-    def __init__(self, parser: 'XPath1Parser',
+    def __init__(self, parser: XPathParserType,
                  items: Optional[Iterable[Any]] = None) -> None:
         if items is not None:
             self._array = [x for x in items]
         super().__init__(parser)
 
     def __repr__(self) -> str:
-        return '%s(%r, %r)' % (self.__class__.__name__, self.parser, self._array)
+        if self._array is not None:
+            return f'<{self.__class__.__name__} object at {hex(id(self))}>'
+        return "<{} object (not evaluated constructor) at {}>".format(
+            self.__class__.__name__, hex(id(self))
+        )
 
     def __str__(self) -> str:
         if self._array is not None:
             return str(self._array)
-        elif self.symbol == 'array':
-            return f'not evaluated curly array constructor with {len(self._items)} items'
-        return f'not evaluated square array constructor with {len(self._items)} items'
+
+        items_desc = f'{len(self)} items' if len(self) != 1 else '1 item'
+        if self.symbol == 'array':
+            return f'not evaluated curly array constructor with {items_desc}'
+        return f'not evaluated square array constructor with {items_desc}'
 
     def __len__(self) -> int:
         if self._array is None:
