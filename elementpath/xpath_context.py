@@ -11,31 +11,35 @@ import datetime
 import importlib
 from copy import copy
 from types import ModuleType
-from typing import TYPE_CHECKING, cast, Dict, Any, List, Iterator, \
-    Optional, Sequence, Union, Callable, Set, Tuple
+from typing import TYPE_CHECKING, cast, Any, Dict, List, Optional, Set, Union
 
-from .exceptions import ElementPathTypeError
-from .tdop import Token
-from .namespaces import NamespacesType
-from .datatypes import AnyAtomicType, Timezone, Language
-from .protocols import ElementProtocol, DocumentProtocol
-from .etree import is_etree_element, is_etree_document
-from .xpath_nodes import ChildNodeType, XPathNode, AttributeNode, NamespaceNode, \
+from elementpath._typing import Iterator, Sequence, Callable
+from elementpath.aliases import NamespacesType, SequenceType, InputType
+from elementpath.protocols import ElementProtocol, DocumentProtocol
+from elementpath.exceptions import ElementPathTypeError
+from elementpath.tdop import Token
+from elementpath.datatypes import AnyAtomicType, AtomicType, Timezone, Language
+from elementpath.etree import is_etree_element, is_etree_document
+from elementpath.xpath_nodes import ChildNodeType, XPathNode, AttributeNode, NamespaceNode, \
     CommentNode, ProcessingInstructionNode, ElementNode, DocumentNode, SchemaElementNode
-from .tree_builders import RootArgType, get_node_tree
+from elementpath.tree_builders import RootArgType, get_node_tree
 
 if TYPE_CHECKING:
-    from .xpath_tokens import XPathToken, XPathAxis, XPathFunction
-    ItemType = Union[None, XPathNode, AnyAtomicType, XPathFunction]
-    ItemArgType = Union[XPathNode, AnyAtomicType, XPathFunction,
-                        ElementProtocol, DocumentProtocol]
-else:
-    ItemType = Any
-    ItemArgType = Any
+    from .xpath_tokens import XPathToken, XPathAxis, XPathFunction  # noqa: F401
 
-__all__ = ['XPathContext', 'XPathSchemaContext']
+__all__ = ['XPathContext', 'XPathSchemaContext', 'ContextType', 'ItemType',
+           'ValueType', 'ItemArgType', 'FunctionArgType']
 
-CollectionArgType = Union[None, ItemArgType, List[ItemArgType], Tuple[ItemArgType, ...]]
+###
+# Type annotations aliases for context and tokens classes
+ContextType = Union['XPathContext', 'XPathSchemaContext', None]
+ItemType = Union[XPathNode, AtomicType, 'XPathFunction']
+ValueType = SequenceType[ItemType]
+ItemArgType = Union[ItemType, ElementProtocol, DocumentProtocol]
+FunctionArgType = Union[InputType[ItemArgType], ValueType]
+
+NodeArgType = Union[XPathNode, ElementProtocol, DocumentProtocol]
+CollectionArgType = Optional[InputType[NodeArgType]]
 
 
 class XPathContext:
@@ -56,10 +60,10 @@ class XPathContext:
     This can be useful when the dynamic context has additional namespaces and root \
     is an Element or an ElementTree instance of the standard library.
     :param uri: an optional URI associated with the root element or the document.
-    :param fragment: if `True` a root element is considered a fragment, otherwise \
+    :param fragment: if `True` a root element is considered a fragment, if `False` \
     a root element is considered the root of an XML document, and a dummy document \
     is created for selection. In this case the dummy document value is not included \
-    in the results.
+    in the results. If `None` is provided, the root node kind is preserved.
     :param item: the context item. A `None` value means that the context is positioned on \
     the document node.
     :param position: the current position of the node within the input sequence.
@@ -88,11 +92,11 @@ class XPathContext:
     _etree: Optional[ModuleType] = None
     root: Union[DocumentNode, ElementNode, None] = None
     document: Optional[DocumentNode] = None
-    item: Optional[ItemType]
+    item: ItemType
     total_nodes: int = 0  # Number of nodes associated to the context
 
-    variables: Dict[str, Union[ItemType, List[ItemType]]]
-    documents: Optional[Dict[str, Union[DocumentNode, ElementNode, None]]] = None
+    variables: Dict[str, ValueType]
+    documents: Optional[Dict[str, DocumentNode]] = None
     collections = None
     default_collection = None
 
@@ -100,15 +104,15 @@ class XPathContext:
                  root: Optional[RootArgType] = None,
                  namespaces: Optional[NamespacesType] = None,
                  uri: Optional[str] = None,
-                 fragment: bool = False,
+                 fragment: Optional[bool] = False,
                  item: Optional[ItemArgType] = None,
                  position: int = 1,
                  size: int = 1,
                  axis: Optional[str] = None,
-                 variables: Optional[Dict[str, CollectionArgType]] = None,
+                 variables: Optional[Dict[str, InputType[ItemArgType]]] = None,
                  current_dt: Optional[datetime.datetime] = None,
                  timezone: Optional[Union[str, Timezone]] = None,
-                 documents: Optional[Dict[str, Optional[RootArgType]]] = None,
+                 documents: Optional[Dict[str, RootArgType]] = None,
                  collections: Optional[Dict[str, CollectionArgType]] = None,
                  default_collection: CollectionArgType = None,
                  text_resources: Optional[Dict[str, str]] = None,
@@ -159,18 +163,16 @@ class XPathContext:
         self.current_dt = current_dt or datetime.datetime.now(tz=self.timezone)
 
         if documents is not None:
+            # Assume that are all documents because type checking is done by fn:doc().
             self.documents = {
-                k: get_node_tree(v, self.namespaces, k) if v is not None else v
-                for k, v in documents.items()
+                k: cast(DocumentNode, get_node_tree(v, self.namespaces, k))
+                if v is not None else v for k, v in documents.items()
             }
 
         self.variables = {}
         if variables is not None:
-            for k, v in variables.items():
-                if v is None or isinstance(v, (list, tuple)):
-                    self.variables[k] = self.get_collection(v)
-                else:
-                    self.variables[k] = self.get_context_item(v)
+            for varname, value in variables.items():
+                self.variables[varname] = self.get_value(value, self.namespaces)
 
         if collections is not None:
             self.collections = {k: self.get_collection(v) for k, v in collections.items()}
@@ -223,12 +225,12 @@ class XPathContext:
 
     def get_root(self, node: Any) -> Union[None, ElementNode, DocumentNode]:
         if isinstance(self.root, (DocumentNode, ElementNode)):
-            if any(node is x for x in self.root.iter()):
+            if any(node is x for x in self.root.iter_lazy()):
                 return self.root
 
         if self.documents is not None:
             for uri, doc in self.documents.items():
-                if doc is not None and any(node is x for x in doc.iter()):
+                if doc is not None and any(node is x for x in doc.iter_lazy()):
                     return doc
 
         return None
@@ -253,7 +255,7 @@ class XPathContext:
     def get_context_item(self, item: ItemArgType,
                          namespaces: Optional[NamespacesType] = None,
                          uri: Optional[str] = None,
-                         fragment: bool = False) -> ItemType:
+                         fragment: Optional[bool] = False) -> ItemType:
         """
         Checks the item and returns an item suitable for XPath processing.
         For XML trees and elements try a match with an existing node in the
@@ -300,15 +302,24 @@ class XPathContext:
             fragment=fragment
         )
 
-    def get_collection(self, items: Optional[CollectionArgType]) -> Optional[List[ItemType]]:
-        if items is None:
-            return None
-        elif isinstance(items, (list, tuple)):
-            return [self.get_context_item(x) for x in items]
-        else:
-            return [self.get_context_item(items)]
+    def get_value(self, item: FunctionArgType, *args: Any, **kwargs: Any) -> ValueType:
+        if item is None:
+            return []
+        elif not isinstance(item, (list, tuple)):
+            return self.get_context_item(item, *args, **kwargs)
+        return [self.get_context_item(x, *args, **kwargs) for x in item]
 
-    def inner_focus_select(self, token: Union['XPathToken', 'XPathAxis']) -> Iterator[Any]:
+    def get_collection(self, items: CollectionArgType) -> List[XPathNode]:
+        if items is None:
+            return []
+        elif isinstance(items, (list, tuple)):
+            return [x for x in map(self.get_context_item, items) if isinstance(x, XPathNode)]
+        else:
+            item = self.get_context_item(items)
+            return [item] if isinstance(item, XPathNode) else []
+
+    def inner_focus_select(self, token: Union['XPathToken', 'XPathAxis']) \
+            -> Iterator[ItemType]:
         """Apply the token's selector with an inner focus."""
         status = self.item, self.size, self.position, self.axis
         results = [x for x in token.select(copy(self))]
@@ -334,6 +345,8 @@ class XPathContext:
         :param selectors: a sequence of selector generator functions.
         :param varnames: a sequence of variables for storing the generated values.
         """
+        if varnames is None:
+            varnames = []
         iterators = [x(self) for x in selectors]
         dimension = len(iterators)
         prod = [None] * dimension
@@ -341,30 +354,28 @@ class XPathContext:
 
         k = 0
         while True:
-            try:
-                value = next(iterators[k])
-            except StopIteration:
-                if not k:
-                    return
-                iterators[k] = selectors[k](self)
-                k -= 1
-            else:
-                if varnames is not None:
-                    try:
-                        self.variables[varnames[k]] = value
-                    except (TypeError, IndexError):
-                        pass
+            for value in iterators[k]:
+                try:
+                    self.variables[varnames[k]] = value
+                except IndexError:
+                    pass
 
                 prod[k] = value
                 if k == max_index:
                     yield tuple(prod)
                 else:
                     k += 1
+                break
+            else:
+                if not k:
+                    return
+                iterators[k] = selectors[k](self)
+                k -= 1
 
     ##
     # Context item iterators for axis
 
-    def iter_self(self) -> Iterator[Optional[ItemType]]:
+    def iter_self(self) -> Iterator[ItemType]:
         """Iterator for 'self' axis and '.' shortcut."""
         if self.item is not None:
             status = self.axis
@@ -391,7 +402,7 @@ class XPathContext:
 
             self.item, self.axis = status
 
-    def iter_children_or_self(self) -> Iterator[Optional[ItemType]]:
+    def iter_children_or_self(self) -> Iterator[ItemType]:
         """Iterator for 'child' forward axis and '/' step."""
         if self.item is not None:
             if self.axis is not None:
@@ -401,12 +412,38 @@ class XPathContext:
                 self.axis = 'child'
 
                 if self.item is self.document and self.root is not self.document:
-                    yield self.root
+                    if self.root is not None:
+                        yield self.root
                 else:
                     for self.item in self.item:
                         yield self.item
 
                 self.item, self.axis = _status
+
+    def iter_matching_nodes(self, name: str, default_namespace: Optional[str] = None) \
+            -> Iterator[Union[AttributeNode, ElementNode]]:
+        """
+        Iterator for matching elements or attributes. For default uses 'child'
+        forward axis if no axis is active, otherwise tests the current item.
+        """
+        if self.axis is not None:
+            if isinstance(self.item, (AttributeNode, ElementNode)):
+                if self.item.match_name(name, default_namespace):
+                    yield self.item
+        elif isinstance(self.item, (ElementNode, DocumentNode)):
+            _status = self.item, self.axis
+            self.axis = 'child'
+
+            if self.item is self.document and isinstance(self.root, ElementNode):
+                if self.root.match_name(name, default_namespace):
+                    yield self.root
+            else:
+                for self.item in self.item:
+                    if self.item.match_name(name, default_namespace):
+                        assert isinstance(self.item, ElementNode)
+                        yield self.item
+
+            self.item, self.axis = _status
 
     def iter_parent(self) -> Iterator[Union[ElementNode, DocumentNode]]:
         """Iterator for 'parent' reverse axis and '..' shortcut."""

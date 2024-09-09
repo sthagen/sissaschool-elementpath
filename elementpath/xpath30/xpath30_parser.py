@@ -17,9 +17,9 @@ Refs:
 from copy import deepcopy
 from typing import Any, ClassVar, Dict, Optional, Tuple
 
-from ..namespaces import XPATH_MATH_FUNCTIONS_NAMESPACE
-from ..datatypes import QName
-from ..xpath2 import XPath2Parser
+from elementpath.namespaces import XPATH_MATH_FUNCTIONS_NAMESPACE
+from elementpath.datatypes import QName
+from elementpath.xpath2 import XPath2Parser
 
 
 DecimalFormatsType = Dict[Optional[str], Dict[str, str]]
@@ -70,7 +70,6 @@ class XPath30Parser(XPath2Parser):
             'pattern-separator': ';',
         }
     }
-    defuse_xml: bool = True
 
     def __init__(self, *args: Any, decimal_formats: Optional[DecimalFormatsType] = None,
                  defuse_xml: bool = True, **kwargs: Any) -> None:

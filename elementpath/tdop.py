@@ -15,10 +15,11 @@ import re
 from abc import ABCMeta
 from unicodedata import name as unicode_name
 from decimal import Decimal, DecimalException
-from typing import Any, cast, overload, Callable, Dict, Generic, List, \
-    Optional, Union, Tuple, Type, Pattern, Match, MutableMapping, \
-    MutableSequence, Iterator, TypeVar
+from typing import Any, cast,  Dict, List, overload, Generic, Optional, Union, \
+    Tuple, Type, Iterator, TypeVar
 
+from elementpath._typing import Callable, Match, MutableMapping, \
+    MutableSequence, Pattern
 #
 # Simple top-down parser based on Vaughan Pratt's algorithm (Top Down Operator Precedence).
 #
@@ -156,17 +157,17 @@ class Token(MutableSequence[TK]):
     rbp: int = 0           # right binding power
     symbol: str = ''       # the token identifier
     lookup_name: str = ''  # the key in symbol table, usually matches the symbol.
-    label: str = 'symbol'  # optional label
+    label: Union[str, MultiLabel] = 'symbol'  # the label, that usually means a class of tokens.
     pattern: Optional[str] = None  # a custom regex pattern for building the tokenizer
 
     __slots__ = '_items', 'parser', 'value', 'span'
 
     _items: List[TK]
-    parser: 'Parser[Token[TK]]'
-    value: Optional[Any]
+    parser: 'Parser[TK]'
+    value: Any
     span: Tuple[int, int]
 
-    def __init__(self, parser: 'Parser[Token[TK]]',
+    def __init__(self, parser: 'Parser[TK]',
                  value: Optional[Any] = None) -> None:
         self._items = []
         self.parser = parser
@@ -261,7 +262,7 @@ class Token(MutableSequence[TK]):
             return 1, token_index + 1
         return line, token_index - self.parser.source[:token_index].rindex('\n')
 
-    def as_name(self) -> 'Token[TK]':
+    def as_name(self) -> TK:
         """Returns a new '(name)' token for resolving ambiguous states."""
         assert self.parser.name_pattern.match(self.symbol) is not None, \
             "Token symbol is not compatible with the name pattern!"
@@ -318,12 +319,12 @@ class Token(MutableSequence[TK]):
         """Evaluation method"""
         return self.value
 
-    def iter(self, *symbols: str) -> Iterator['Token[TK]']:
+    def iter(self: TK, *symbols: str) -> Iterator[TK]:
         """Returns a generator for iterating the token's tree."""
-        status: List[Tuple[Optional['Token[TK]'], Iterator['Token[TK]']]] = []
-        parent: Optional['Token[TK]'] = self
-        children: Iterator['Token[TK]'] = iter(self)
-        tk: 'Token[TK]'
+        status: List[Tuple[Optional[TK], Iterator[TK]]] = []
+        parent: Optional[TK] = self
+        children: Iterator[TK] = iter(self)
+        tk: TK
 
         while True:
             for tk in children:
@@ -428,6 +429,8 @@ class ParserMeta(ABCMeta):
 
 
 TK_co = TypeVar('TK_co', bound=Token[Any], covariant=True)
+
+RT = TypeVar('RT')
 
 
 class Parser(Generic[TK_co], metaclass=ParserMeta):
@@ -791,7 +794,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
 
     @classmethod
     def method(cls, symbol: Union[str, Type[TK_co]], bp: int = 0) \
-            -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+            -> Callable[[Callable[..., RT]], Callable[..., RT]]:
         """
         Register a token for a symbol that represents a custom operator or redefine
         a method for an existing token.

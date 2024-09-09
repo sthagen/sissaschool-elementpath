@@ -1295,8 +1295,13 @@ class XPath2FunctionsTest(xpath_test_class.XPathTestCase):
         self.check_value("idref('ID21256', $x)", [], context=context)
 
         context = XPathContext(root, variables={'x': None})
-        context.item = None
-        self.check_value("idref('ID21256', $x)", [], context=context)
+        self.wrong_type("idref('ID21256', $x)", 'XPTY0004', context=context)
+
+        context = XPathContext(root, variables={'x': []})
+        self.wrong_type("idref('ID21256', $x)", 'XPTY0004', context=context)
+
+        context = XPathContext(root)
+        self.wrong_type("idref('ID21256', ())", 'XPTY0004', context=context)
 
     def test_deep_equal_function(self):
         root = self.etree.XML("""
@@ -1655,7 +1660,7 @@ class XPath2FunctionsTest(xpath_test_class.XPathTestCase):
     def test_error_function(self):
         with self.assertRaises(ElementPathError) as err:
             self.check_value('fn:error()')
-        self.assertEqual(str(err.exception), '[err:FOER0000] Unidentified error')
+        self.assertIn('[err:FOER0000] Unidentified error', str(err.exception))
 
         with self.assertRaises(ElementPathError) as err:
             self.check_value('fn:error("err:XPST0001")')
@@ -1665,14 +1670,14 @@ class XPath2FunctionsTest(xpath_test_class.XPathTestCase):
             self.check_value(
                 "fn:error(fn:QName('http://www.w3.org/2005/xqt-errors', 'err:XPST0001'))"
             )
-        self.assertEqual(str(err.exception), '[err:XPST0001] Parser not bound to a schema')
+        self.assertIn('[err:XPST0001] Parser not bound to a schema', str(err.exception))
 
         with self.assertRaises(ElementPathError) as err:
             self.check_value(
                 "fn:error(fn:QName('http://www.w3.org/2005/xqt-errors', 'err:XPST0001'), "
                 "'Missing schema')"
             )
-        self.assertEqual(str(err.exception), '[err:XPST0001] Missing schema')
+        self.assertIn('[err:XPST0001] Missing schema', str(err.exception))
 
     def test_trace_function(self):
         self.check_value('trace((), "trace message")', [])

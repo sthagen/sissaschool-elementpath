@@ -172,7 +172,7 @@ class XPathContextTest(unittest.TestCase):
         node = TextNode('hello world!')
 
         context = XPathContext(self.root, default_collection=1)
-        self.assertListEqual(context.default_collection, [1])
+        self.assertListEqual(context.default_collection, [])
         context = XPathContext(self.root, default_collection=[node])
         self.assertListEqual(context.default_collection, [node])
 
@@ -238,9 +238,6 @@ class XPathContextTest(unittest.TestCase):
             context.root.xsd_type = xsd_type
             self.assertListEqual(list(context.iter_attributes()), context.root.attributes)
             self.assertNotEqual(attributes, context.root.attributes)
-
-        context.item = None
-        self.assertListEqual(list(context.iter_attributes()), [])
 
     def test_iter_children_or_self(self):
         doc = ElementTree.ElementTree(self.root)

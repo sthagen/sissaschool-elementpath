@@ -10,7 +10,7 @@
 import re
 from typing import Any
 
-from ..helpers import NORMALIZE_PATTERN, collapse_white_spaces
+from elementpath.helpers import NORMALIZE_PATTERN, collapse_white_spaces
 from .atomic_types import AnyAtomicType
 
 
@@ -23,6 +23,9 @@ class NormalizedString(str, AnyAtomicType):
             return super().__new__(cls, NORMALIZE_PATTERN.sub(' ', obj))
         except TypeError:
             return super().__new__(cls, obj)
+
+    def __init__(self, obj: Any) -> None:
+        str.__init__(self)
 
 
 class XsdToken(NormalizedString):

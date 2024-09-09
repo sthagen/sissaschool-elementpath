@@ -8,22 +8,18 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 from abc import ABCMeta, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Optional, Iterator, Set, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Union
 
-from .exceptions import ElementPathTypeError
-from .protocols import XsdTypeProtocol, XsdAttributeProtocol, XsdElementProtocol, \
-    XsdSchemaProtocol
-from .datatypes import AtomicValueType
-from .etree import is_etree_element
-from .xpath_context import XPathSchemaContext
+from elementpath._typing import Iterator
+from elementpath.exceptions import ElementPathTypeError
+from elementpath.protocols import XsdTypeProtocol, XsdAttributeProtocol, \
+    XsdElementProtocol, XsdSchemaProtocol
+from elementpath.datatypes import AtomicType
+from elementpath.etree import is_etree_element
+from elementpath.xpath_context import XPathSchemaContext
 
 if TYPE_CHECKING:
-    from .xpath2 import XPath2Parser
-    from .xpath30 import XPath30Parser
-
-    XPathParserType = Union[XPath2Parser, XPath30Parser]
-else:
-    XPathParserType = Any
+    from elementpath.xpath_tokens import XPath2ParserType
 
 
 class AbstractSchemaProxy(metaclass=ABCMeta):
@@ -48,7 +44,7 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
         self._schema = schema
         self._base_element: Optional[XsdElementProtocol] = base_element
 
-    def bind_parser(self, parser: XPathParserType) -> None:
+    def bind_parser(self, parser: 'XPath2ParserType') -> None:
         """
         Binds a parser instance with schema proxy adding the schema's atomic types constructors.
         This method can be redefined in a concrete proxy to optimize schema bindings.
@@ -149,7 +145,7 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
         """
 
     @abstractmethod
-    def cast_as(self, obj: Any, type_qname: str) -> AtomicValueType:
+    def cast_as(self, obj: Any, type_qname: str) -> AtomicType:
         """
         Converts *obj* to the Python type associated with an XSD global type. A concrete
         implementation must raises a `ValueError` or `TypeError` in case of a decoding

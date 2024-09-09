@@ -14,22 +14,23 @@ from abc import ABCMeta
 import locale
 from collections.abc import MutableSequence
 from urllib.parse import urlparse
-from typing import cast, Any, Callable, ClassVar, Dict, List, \
-    MutableMapping, Optional, Tuple, Type, Union
+from typing import cast, Any, ClassVar, Dict, List, Optional, Tuple, Type, Union
 
-from ..helpers import upper_camel_case, is_ncname, ordinal
-from ..exceptions import ElementPathError, ElementPathTypeError, \
+from elementpath._typing import Callable, MutableMapping
+from elementpath.aliases import NamespacesType, NargsType
+from elementpath.helpers import upper_camel_case, is_ncname, ordinal
+from elementpath.exceptions import ElementPathError, ElementPathTypeError, \
     ElementPathValueError, MissingContextError, xpath_error
-from ..namespaces import NamespacesType, XSD_NAMESPACE, XML_NAMESPACE, \
+from elementpath.namespaces import XSD_NAMESPACE, XML_NAMESPACE, \
     XPATH_FUNCTIONS_NAMESPACE, XQT_ERRORS_NAMESPACE, \
     XSD_NOTATION, XSD_ANY_ATOMIC_TYPE, get_prefixed_name
-from ..collations import UNICODE_COLLATION_BASE_URI, UNICODE_CODEPOINT_COLLATION
-from ..datatypes import UntypedAtomic, AtomicValueType, QName
-from ..xpath_tokens import NargsType, XPathToken, ProxyToken, XPathFunction, XPathConstructor
-from ..xpath_context import XPathContext, XPathSchemaContext
-from ..sequence_types import is_sequence_type, match_sequence_type
-from ..schema_proxy import AbstractSchemaProxy
-from ..xpath1 import XPath1Parser
+from elementpath.collations import UNICODE_COLLATION_BASE_URI, UNICODE_CODEPOINT_COLLATION
+from elementpath.datatypes import UntypedAtomic, AtomicType, QName
+from elementpath.xpath_tokens import XPathToken, ProxyToken, XPathFunction, XPathConstructor
+from elementpath.xpath_context import XPathContext, XPathSchemaContext
+from elementpath.sequence_types import is_sequence_type, match_sequence_type
+from elementpath.schema_proxy import AbstractSchemaProxy
+from elementpath.xpath1 import XPath1Parser
 
 
 class XPath2Parser(XPath1Parser):
@@ -72,7 +73,6 @@ class XPath2Parser(XPath1Parser):
     Default is 'node()*'.
     """
     version = '2.0'
-    default_collation = UNICODE_CODEPOINT_COLLATION
 
     DEFAULT_NAMESPACES: ClassVar[Dict[str, str]] = {
         'xml': XML_NAMESPACE,
@@ -98,10 +98,6 @@ class XPath2Parser(XPath1Parser):
     token: XPathToken
     next_token: XPathToken
 
-    @staticmethod
-    def tracer(trace_data: str) -> None:
-        """Trace data collector"""
-
     def __init__(self, namespaces: Optional[NamespacesType] = None,
                  strict: bool = True,
                  compatibility_mode: bool = False,
@@ -113,7 +109,7 @@ class XPath2Parser(XPath1Parser):
                  base_uri: Optional[str] = None,
                  variable_types: Optional[Dict[str, str]] = None,
                  document_types: Optional[Dict[str, str]] = None,
-                 collection_types: Optional[Dict[str, str]] = None,
+                 collection_types: Optional[NamespacesType] = None,
                  default_collection_type: str = 'node()*') -> None:
 
         super(XPath2Parser, self).__init__(namespaces, strict)
@@ -258,16 +254,15 @@ class XPath2Parser(XPath1Parser):
                     msg = 'Too many arguments: expected at most 1 argument'
                     raise self.error('XPST0017', msg)
                 self.parser.advance(')')
-                self.value = None
             except SyntaxError:
                 raise self.error('XPST0017') from None
-
-            if self[0].symbol == '?':
-                self.to_partial_function()
-            return self
+            else:
+                if self[0].symbol == '?':
+                    self.to_partial_function()
+                return self
 
         def evaluate_(self: XPathConstructor, context: Optional[XPathContext] = None) \
-                -> Union[List[None], AtomicValueType]:
+                -> Union[List[None], AtomicType]:
             if self.context is not None:
                 context = self.context
 
@@ -316,13 +311,13 @@ class XPath2Parser(XPath1Parser):
             self_.parser.advance(')')
 
             try:
-                self_.value = self_.evaluate()  # Static context evaluation
+                self_.evaluate()  # for static context evaluation
             except MissingContextError:
-                self_.value = None
+                pass
             return self_
 
         def evaluate_(self_: XPathFunction, context: Optional[XPathContext] = None) \
-                -> Union[List[None], AtomicValueType]:
+                -> Union[List[None], AtomicType]:
             arg = self_.get_argument(context)
             if arg is None or self_.parser.schema is None:
                 return []

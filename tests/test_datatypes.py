@@ -34,9 +34,10 @@ from elementpath.datatypes import AnyAtomicType, DateTime, DateTime10, Date, Dat
     ArithmeticProxy, Id, Notation, QName, Base64Binary, HexBinary, NormalizedString, \
     XsdToken, Language, Float, Float10, Integer, Short, NegativeInteger, AnyURI, \
     BooleanProxy, DecimalProxy, DoubleProxy10, DoubleProxy, StringProxy, \
-    xsd10_atomic_types, xsd11_atomic_types, get_atomic_value
+    xsd10_atomic_types, xsd11_atomic_types
 from elementpath.datatypes.atomic_types import AtomicTypeMeta
 from elementpath.datatypes.datetime import OrderedDateTime
+from elementpath.decoder import get_atomic_value
 
 
 class AtomicTypesTest(unittest.TestCase):
@@ -80,7 +81,7 @@ class AtomicTypesTest(unittest.TestCase):
         with self.assertRaises(AttributeError):
             get_atomic_value(schema)
 
-        self.assertEqual(get_atomic_value(xsd_type=None), UntypedAtomic(value='1'))
+        self.assertEqual(get_atomic_value(xsd_type=None), UntypedAtomic(value=''))
 
         value = get_atomic_value(schema.elements['a'].type)
         self.assertIsInstance(value, UntypedAtomic)
@@ -99,8 +100,8 @@ class AtomicTypesTest(unittest.TestCase):
         self.assertEqual(value, 1.0)
 
         value = get_atomic_value(schema.elements['e'].type)
-        self.assertIsInstance(value, UntypedAtomic)
-        self.assertEqual(value, UntypedAtomic(value='1'))
+        self.assertIsInstance(value, str)
+        self.assertEqual(value, '  alpha\t')
 
 
 class AnyAtomicTypeTest(unittest.TestCase):

@@ -449,11 +449,6 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         context = XPathContext(root)
         self.check_value('./B/@xml:id[id("bar")]', expected=[], context=context)
 
-        context.item = None
-        self.check_value('id("none")', expected=[], context=context)
-        self.check_value('id("foo")', expected=[context.root[0]], context=context)
-        self.check_value('id("bar")', expected=[context.root[2]], context=context)
-
         context.item = CommentNode(self.etree.Comment('a comment'))
         self.check_value('id("foo")', expected=[], context=context)
 
@@ -1567,10 +1562,7 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
             self.check_selector('/*:foo', root, [root], namespaces={'': 'ns'})  # foo --> {ns}foo
 
         root = self.etree.XML('<foo xmlns="ns">bar</foo>')
-        if self.parser.version == '1.0' or self.etree is not lxml_etree:
-            self.check_selector('/foo', root, [])
-        else:
-            self.check_selector('/foo', root, [root])
+        self.check_selector('/foo', root, [])
 
         if self.parser.version == '1.0':
             self.check_selector('/foo', root, [], namespaces={'': 'ns'})

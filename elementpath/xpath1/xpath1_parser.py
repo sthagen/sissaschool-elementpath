@@ -12,22 +12,24 @@ XPath 1.0 implementation - part 1 (parser class and symbols)
 """
 import re
 from abc import ABCMeta
-from typing import cast, Any, ClassVar, Dict, MutableMapping, \
-    Optional, Tuple, Type, Set, Sequence
+from typing import cast, Any, ClassVar, Dict, Optional, Set, Tuple, Type
 
-from ..exceptions import MissingContextError, ElementPathValueError, \
+from elementpath._typing import MutableMapping, Sequence
+from elementpath.aliases import NamespacesType, NargsType
+from elementpath.exceptions import MissingContextError, ElementPathValueError, \
     ElementPathNameError, ElementPathKeyError, xpath_error
-from ..datatypes import QName
-from ..tdop import Token, Parser
-from ..namespaces import NamespacesType, XML_NAMESPACE, XSD_NAMESPACE, \
-    XPATH_FUNCTIONS_NAMESPACE
-from ..sequence_types import match_sequence_type
-from ..schema_proxy import AbstractSchemaProxy
-from ..xpath_tokens import NargsType, XPathToken, XPathAxis, XPathFunction, \
-    ProxyToken, ContextArgType
+from elementpath.collations import UNICODE_CODEPOINT_COLLATION
+from elementpath.datatypes import QName
+from elementpath.tdop import Parser
+from elementpath.namespaces import XML_NAMESPACE, XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE
+from elementpath.sequence_types import match_sequence_type
+from elementpath.schema_proxy import AbstractSchemaProxy
+from elementpath.xpath_context import ContextType
+from elementpath.xpath_tokens import XPathTokenType, XPathToken, XPathAxis, \
+    XPathFunction, ProxyToken
 
 
-class XPath1Parser(Parser[XPathToken]):
+class XPath1Parser(Parser[XPathTokenType]):
     """
     XPath 1.0 expression parser class. Provide a *namespaces* dictionary argument for
     mapping namespace prefixes to URI inside expressions. If *strict* is set to `False`
@@ -40,7 +42,7 @@ class XPath1Parser(Parser[XPathToken]):
     version = '1.0'
     """The XPath version string."""
 
-    token_base_class: Type[Token[Any]] = XPathToken
+    token_base_class = XPathToken  # type: ignore[assignment, unused-ignore]
     literals_pattern = re.compile(
         r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|(?:\d+|\.\d+)(?:\.\d*)?(?:[Ee][+-]?\d+)?"""
     )
@@ -62,10 +64,15 @@ class XPath1Parser(Parser[XPathToken]):
     # Class attributes for compatibility with XPath 2.0+
     schema: Optional[AbstractSchemaProxy] = None
     variable_types: Optional[Dict[str, str]] = None
+    document_types: Optional[Dict[str, str]] = None
+    collection_types: Optional[NamespacesType] = None
+    default_collection_type: str = 'node()*'
     base_uri: Optional[str] = None
     function_namespace = XPATH_FUNCTIONS_NAMESPACE
     function_signatures: Dict[Tuple[QName, int], str] = {}
+    decimal_formats: Dict[Optional[str], Any] = {}
     parse_arguments: bool = True
+    defuse_xml: bool = True
 
     compatibility_mode: bool = True
     """XPath 1.0 compatibility mode."""
@@ -75,6 +82,12 @@ class XPath1Parser(Parser[XPathToken]):
     The default namespace. For XPath 1.0 this value is always `None` because the default
     namespace is ignored (see https://www.w3.org/TR/1999/REC-xpath-19991116/#node-tests).
     """
+
+    default_collation = UNICODE_CODEPOINT_COLLATION
+
+    @staticmethod
+    def tracer(trace_data: str) -> None:
+        """Trace data collector"""
 
     def __init__(self, namespaces: Optional[NamespacesType] = None,
                  strict: bool = True) -> None:
@@ -140,14 +153,16 @@ class XPath1Parser(Parser[XPathToken]):
             cls.symbol_table[f'{{{token_cls.namespace}}}{symbol}'] = token_cls
 
         proxy_class = cls.register(symbol, bases=(ProxyToken,), label=label, lbp=bp, rbp=bp)
-        return cast(Type[ProxyToken], proxy_class)
+        assert issubclass(proxy_class, ProxyToken)
+        return proxy_class
 
     @classmethod
     def axis(cls, symbol: str, reverse_axis: bool = False, bp: int = 80) -> Type[XPathAxis]:
         """Register a token for a symbol that represents an XPath *axis*."""
         token_class = cls.register(symbol, label='axis', bases=(XPathAxis,),
                                    reverse_axis=reverse_axis, lbp=bp, rbp=bp)
-        return cast(Type[XPathAxis], token_class)
+        assert issubclass(token_class, XPathAxis)
+        return token_class
 
     @classmethod
     def function(cls, symbol: str,
@@ -235,7 +250,8 @@ class XPath1Parser(Parser[XPathToken]):
                 not isinstance(self.next_token, (XPathFunction, XPathAxis)) and \
                 self.name_pattern.match(self.next_token.symbol) is not None:
             # Disambiguation replacing the next token with a '(name)' token
-            self.next_token = self.symbol_table['(name)'](self, self.next_token.symbol)
+            cls = cast(Type[XPathToken], self.symbol_table['(name)'])
+            self.next_token = cls(self, self.next_token.symbol)
         else:
             raise self.next_token.wrong_syntax(message)
 
@@ -249,7 +265,7 @@ class XPath1Parser(Parser[XPathToken]):
                 raise xpath_error('XPDY0050', message)
 
     def get_function(self, name: str, arity: Optional[int],
-                     context: ContextArgType = None) -> XPathFunction:
+                     context: ContextType = None) -> XPathFunction:
         """
         Returns an XPathFunction object suitable for stand-alone usage.
 
@@ -315,4 +331,4 @@ XPath1Parser.register(']')
 XPath1Parser.register('::')
 XPath1Parser.register('}')
 
-# XPath 1.0 definitions continue into module xpath1_operators
+# XPath 1.0 definitions continue into module _xpath1_operators

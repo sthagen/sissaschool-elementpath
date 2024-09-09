@@ -12,8 +12,10 @@ import math
 from calendar import isleap, leapdays
 from decimal import Decimal
 from operator import attrgetter
+from typing import Any, List, Optional, Union, SupportsFloat
 from urllib.parse import urlsplit
-from typing import Any, Iterator, List, Match, Optional, Union, SupportsFloat
+
+from elementpath._typing import Iterator, Match
 
 ###
 # Common sets constants
@@ -140,7 +142,7 @@ def round_number(value: Union[float, int, Decimal]) -> Union[float, int, Decimal
         return type(value)(number.quantize(Decimal('1'), rounding='ROUND_HALF_DOWN'))
 
 
-def normalized_seconds(seconds: Decimal) -> str:
+def normalized_seconds(seconds: Union[int, Decimal]) -> str:
     # Decimal.normalize() does not remove exp every time: eg. Decimal('1E+1')
     return '{:.6f}'.format(seconds).rstrip('0').rstrip('.')
 

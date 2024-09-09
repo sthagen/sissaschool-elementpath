@@ -7,28 +7,34 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
+from collections import deque
 from importlib import import_module
 from urllib.parse import urljoin
 from types import ModuleType
-from typing import cast, Any, Dict, Iterator, List, MutableMapping, Optional, Tuple, Union
+from typing import cast, Any, Dict, List, Optional, Tuple, Union
 
-from .datatypes import UntypedAtomic, get_atomic_value, AtomicValueType
-from .namespaces import XML_NAMESPACE, XML_BASE, XSI_NIL, \
+from elementpath._typing import Deque, Iterator, MutableMapping
+from elementpath.aliases import SequenceType
+from elementpath.datatypes import UntypedAtomic, AtomicType
+from elementpath.namespaces import XML_NAMESPACE, XML_BASE, XSI_NIL, \
     XSD_ANY_TYPE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE, \
     XML_ID, XSD_IDREF, XSD_IDREFS
-from .protocols import ElementProtocol, DocumentProtocol, XsdElementProtocol, \
+from elementpath.protocols import ElementProtocol, DocumentProtocol, XsdElementProtocol, \
     XsdAttributeProtocol, XsdTypeProtocol, XsdSchemaProtocol
-from .helpers import match_wildcard, is_absolute_uri
-from .etree import etree_iter_strings, is_etree_element, is_etree_document
+from elementpath.helpers import match_wildcard, is_absolute_uri
+from elementpath.decoder import get_atomic_value
+from elementpath.etree import etree_iter_strings, is_etree_element, is_etree_document
 
-__all__ = ['is_xpath_node', 'SchemaElemType', 'ChildNodeType', 'ElementMapType',
-           'XPathNode', 'AttributeNode', 'NamespaceNode', 'TextNode',
-           'CommentNode', 'ProcessingInstructionNode', 'ElementNode',
-           'LazyElementNode', 'SchemaElementNode', 'DocumentNode']
+__all__ = ['is_xpath_node', 'SchemaElemType', 'TypedNodeType', 'ParentNodeType',
+           'ChildNodeType', 'ElementMapType', 'XPathNode', 'AttributeNode',
+           'NamespaceNode', 'TextNode', 'CommentNode', 'ProcessingInstructionNode',
+           'ElementNode', 'LazyElementNode', 'SchemaElementNode', 'DocumentNode']
 
 _XSD_SPECIAL_TYPES = {XSD_ANY_TYPE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE}
 
 SchemaElemType = Union[XsdSchemaProtocol, XsdElementProtocol]
+TypedNodeType = Union['AttributeNode', 'ElementNode']
+ParentNodeType = Union['DocumentNode', 'ElementNode']
 ChildNodeType = Union['TextNode', 'ElementNode', 'CommentNode', 'ProcessingInstructionNode']
 ElementMapType = Dict[Union[ElementProtocol, SchemaElemType], 'ElementNode']
 
@@ -93,7 +99,7 @@ class XPathNode:
         raise NotImplementedError()
 
     @property
-    def typed_value(self) -> Optional[AtomicValueType]:
+    def typed_value(self) -> Optional[SequenceType[AtomicType]]:
         raise NotImplementedError()
 
     # Other common attributes, properties and methods
@@ -103,6 +109,10 @@ class XPathNode:
     @property
     def root_node(self, namespace: Optional[str] = None) -> 'XPathNode':
         return self if self.parent is None else self.parent.root_node
+
+    @property
+    def nsmap(self) -> MutableMapping[Optional[str], str]:
+        return self.parent.nsmap if self.parent is not None else {}
 
     def is_schema_node(self) -> Optional[bool]:
         return None
@@ -114,7 +124,8 @@ class XPathNode:
 
         :param name: a fully qualified name, a local name or a wildcard. The accepted \
         wildcard formats are '*', '*:*', '*:local-name' and '{namespace}*'.
-        :param default_namespace: the default namespace for unprefixed names.
+        :param default_namespace: the default namespace for matching element names. \
+        The default is no-namespace.
         """
         return False
 
@@ -180,12 +191,16 @@ class AttributeNode(XPathNode):
         return str(get_atomic_value(self.value.type))
 
     @property
-    def typed_value(self) -> AtomicValueType:
+    def typed_value(self) -> Optional[SequenceType[AtomicType]]:
         if not isinstance(self.value, str):
             return get_atomic_value(self.value.type)
         elif self.xsd_type is None or self.xsd_type.name in _XSD_SPECIAL_TYPES:
             return UntypedAtomic(self.value)
-        return cast(AtomicValueType, self.xsd_type.decode(self.value))
+
+        nsmap = None if self.parent is None else self.parent.nsmap
+        if self.xsd_type.is_list() and self.xsd_type.is_valid(self.value, namespaces=nsmap):
+            return [get_atomic_value(self.xsd_type, x, nsmap) for x in self.value.split()]
+        return get_atomic_value(self.xsd_type, self.value, nsmap)
 
     def as_item(self) -> Tuple[Optional[str], Union[str, XsdAttributeProtocol]]:
         return self._name, self.value
@@ -530,7 +545,7 @@ class ElementNode(XPathNode):
         return ''.join(etree_iter_strings(self.elem))
 
     @property
-    def typed_value(self) -> Optional[AtomicValueType]:
+    def typed_value(self) -> Optional[SequenceType[AtomicType]]:
         if self.xsd_type is None or \
                 self.xsd_type.name in _XSD_SPECIAL_TYPES or \
                 self.xsd_type.has_mixed_content():
@@ -539,15 +554,16 @@ class ElementNode(XPathNode):
             return None
         elif self.elem.get(XSI_NIL) and getattr(self.xsd_type.parent, 'nillable', None):
             return None
-
-        if self.elem.text is not None:
-            value = self.xsd_type.decode(self.elem.text)
+        elif self.elem.text is not None:
+            if self.xsd_type.is_list() and \
+                    self.xsd_type.is_valid(self.value, namespaces=self.nsmap):
+                return [get_atomic_value(self.xsd_type, x, self.nsmap)
+                        for x in self.elem.text.split()]
+            return get_atomic_value(self.xsd_type, self.elem.text, self.nsmap)
         elif self.elem.get(XSI_NIL) in ('1', 'true'):
             return ''
         else:
-            value = self.xsd_type.decode('')
-
-        return cast(Optional[AtomicValueType], value)
+            return get_atomic_value(self.xsd_type, '')
 
     @property
     def namespace_nodes(self) -> List['NamespaceNode']:
@@ -587,6 +603,13 @@ class ElementNode(XPathNode):
             if item is None:
                 return '/{}'.format('/'.join(reversed(path)))
 
+    @property
+    def default_namespace(self) -> Optional[str]:
+        if None in self.nsmap:
+            return self.nsmap[None]
+        else:
+            return self.nsmap.get('')
+
     def is_schema_node(self) -> bool:
         return hasattr(self.elem, 'name') and hasattr(self.elem, 'type')
 
@@ -599,15 +622,10 @@ class ElementNode(XPathNode):
             return not self.elem.tag
         elif hasattr(self.elem, 'type'):
             return cast(XsdElementProtocol, self.elem).is_matching(name, default_namespace)
-        elif name[0] == '{' or default_namespace is None:
+        elif name[0] == '{' or not default_namespace:
             return self.elem.tag == name
-
-        if None in self.nsmap:
-            default_namespace = self.nsmap[None]  # lxml element in-scope namespaces
-
-        if default_namespace:
-            return self.elem.tag == '{%s}%s' % (default_namespace, name)
-        return self.elem.tag == name
+        else:
+            return self.elem.tag == f'{{{default_namespace}}}{name}'
 
     def get_element_node(self, elem: Union[ElementProtocol, SchemaElemType]) \
             -> Optional['ElementNode']:
@@ -622,10 +640,24 @@ class ElementNode(XPathNode):
             return None
 
     def iter(self) -> Iterator[XPathNode]:
-        # Iterate the tree not including the not built lazy components.
+        """Iterates the tree building lazy components."""
+        yield self
+        yield from self.namespace_nodes
+        yield from self.attributes
+
+        for child in self:
+            if isinstance(child, ElementNode):
+                yield from child.iter()
+            else:
+                yield child
+
+    iter_document = iter  # For backward compatibility
+
+    def iter_lazy(self) -> Iterator[XPathNode]:
+        """Iterates the tree not including the not built lazy components."""
         yield self
 
-        iterators: List[Any] = []
+        iterators: Deque[Any] = deque()  # slightly faster than list()
         children: Iterator[Any] = iter(self.children)
 
         if self._namespace_nodes:
@@ -652,19 +684,6 @@ class ElementNode(XPathNode):
                     children = iterators.pop()
                 except IndexError:
                     return
-
-    def iter_document(self) -> Iterator[XPathNode]:
-        # Iterate the tree but building lazy components.
-        # Rarely used, don't need optimization.
-        yield self
-        yield from self.namespace_nodes
-        yield from self.attributes
-
-        for child in self:
-            if isinstance(child, ElementNode):
-                yield from child.iter()
-            else:
-                yield child
 
     def iter_descendants(self, with_self: bool = True) -> Iterator[ChildNodeType]:
         if with_self:
@@ -746,12 +765,14 @@ class DocumentNode(XPathNode):
             else:
                 yield e
 
-    def iter_document(self) -> Iterator[XPathNode]:
+    iter_document = iter
+
+    def iter_lazy(self) -> Iterator[XPathNode]:
         yield self
 
         for e in self.children:
             if isinstance(e, ElementNode):
-                yield from e.iter_document()
+                yield from e.iter_lazy()
             else:
                 yield e
 
@@ -949,7 +970,7 @@ class SchemaElementNode(ElementNode):
         return str(get_atomic_value(schema_node.type))
 
     @property
-    def typed_value(self) -> Optional[AtomicValueType]:
+    def typed_value(self) -> SequenceType[AtomicType]:
         if not hasattr(self.elem, 'type'):
             return UntypedAtomic('')
         schema_node = cast(XsdElementProtocol, self.elem)
@@ -1021,3 +1042,7 @@ class SchemaElementNode(ElementNode):
 
 def is_xpath_node(obj: Any) -> bool:
     return isinstance(obj, XPathNode) or is_etree_element(obj) or is_etree_document(obj)
+
+
+XPathNodeType = Union[DocumentNode, NamespaceNode, AttributeNode, TextNode,
+                      ElementNode, CommentNode, ProcessingInstructionNode]
