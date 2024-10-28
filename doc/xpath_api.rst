@@ -147,6 +147,8 @@ XPath regular expressions
 =========================
 
 .. autofunction:: elementpath.translate_pattern
+.. autofunction:: elementpath.install_unicode_data
+.. autofunction:: elementpath.unicode_version
 
 
 Exception classes
@@ -154,6 +156,7 @@ Exception classes
 
 .. autoexception:: elementpath.ElementPathError
 .. autoexception:: elementpath.MissingContextError
+.. autoexception:: elementpath.UnsupportedFeatureError
 .. autoexception:: elementpath.RegexError
 .. autoexception:: elementpath.ElementPathLocaleError
 

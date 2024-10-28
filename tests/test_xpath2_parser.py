@@ -1170,12 +1170,13 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.check_value('for', [context.root.getroot()], context)
 
     def test_auxiliary_tokens(self):
+        # Tokens are parsed as names, so raise at evaluation if the contest is None
         self.check_raise('as', MissingContextError)
         self.check_raise('of', MissingContextError)
 
         context = XPathContext(self.etree.XML('<root/>'))
-        self.check_raise('as', MissingContextError, context=context)
-        self.check_raise('of', MissingContextError, context=context)
+        self.check_value('as', expected=None, context=context)
+        self.check_value('of', expected=None, context=context)
 
     def test_function_namespace(self):
         function_namespace = "http://xpath.test/fn/xpath-functions"
@@ -1466,6 +1467,45 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
         assert len(result) == 1
         assert result[-1] == Date10(2018, 1, 23)
+
+    def test_proxy_token_disambiguation__issue_078(self):
+        root = self.etree.XML(dedent('''\
+            <table frame="all" rowsep="1" colsep="1" id="flowers_table">
+                <title>Flowers</title>
+                <tgroup cols="3">
+                  <colspec colname="c1" colnum="1" colwidth="1.0*"/>
+                  <colspec colname="c2" colnum="2" colwidth="1.0*"/>
+                  <colspec colname="c3" colnum="3" colwidth="1.0*"/>
+                  <thead>
+                    <row>
+                      <entry>Flower</entry>
+                      <entry>Type</entry>
+                    </row>
+                  </thead>
+                  <tbody>
+                    <row>
+                      <entry>Chrysanthemum</entry>
+                      <entry>perennial</entry>
+                      <entry>well drained</entry>
+                    </row>
+                    <row>
+                      <entry>Gardenia</entry>
+                      <entry>perennial</entry>
+                    </row>
+                    <row>
+                      <entry>Gerbera</entry>
+                      <entry>annual</entry>
+                      <entry>sandy, well-drained</entry>
+                    </row>
+                    <row>
+                      <entry>Iris</entry>
+                    </row>
+                  </tbody>
+                </tgroup>
+              </table>'''))
+
+        results = select(root, 'min(.//row/count(entry))', parser=self.parser.__class__)
+        self.assertEqual(results, 1)
 
 
 @unittest.skipIf(lxml_etree is None, "The lxml library is not installed")

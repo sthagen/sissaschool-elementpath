@@ -13,9 +13,9 @@ Parse and translate XML Schema regular expressions to Python regex syntax.
 import re
 from sys import maxunicode
 
-from elementpath.helpers import OCCURRENCE_INDICATORS
-from .unicode_subsets import RegexError, UnicodeSubset, unicode_subset
-from .character_classes import I_SHORTCUT_REPLACE, C_SHORTCUT_REPLACE, CharacterClass
+from .codepoints import RegexError
+from .unicode_subsets import UnicodeSubset, unicode_subset
+from .character_classes import CharacterClass, I_SHORTCUT_REPLACE, C_SHORTCUT_REPLACE
 
 HYPHENS_PATTERN = re.compile(r'(?<!\\)--')
 INVALID_HYPHEN_PATTERN = re.compile(r'[^\\]-[^\\]-[^\\]')
@@ -155,7 +155,7 @@ def translate_pattern(pattern: str, flags: int = 0, xsd_version: str = '1.0',
 
             if regex and regex[-1] in ('^', r'(?<!\n\Z)^', '$', r'$(?!\n\Z)'):
                 # ^{n} or ${n} allowed but useless. Invalid in Python re
-                # so incapsulate '^'/'$' inside a non-capturing group.
+                # so encapsulate '^'/'$' inside a non-capturing group.
                 regex[-1] = f'(?:{regex[-1]})'
 
             regex.append(match.group())
@@ -187,7 +187,7 @@ def translate_pattern(pattern: str, flags: int = 0, xsd_version: str = '1.0',
             nested_groups -= 1
             regex.append(ch)
 
-        elif ch in OCCURRENCE_INDICATORS:
+        elif ch in ('?', '*', '+'):
             if pos == 0:
                 msg = "unexpected quantifier {!r} at position {}: {!r}"
                 raise RegexError(msg.format(ch, pos, pattern))
@@ -198,7 +198,7 @@ def translate_pattern(pattern: str, flags: int = 0, xsd_version: str = '1.0',
 
             if regex and regex[-1] in ('^', r'(?<!\n\Z)^', '$', r'$(?!\n\Z)'):
                 # ^*/^+/^? or $*/$+/$? allowed but useless. Invalid in Python re
-                # so incapsulate '^'/'$' inside a non-capturing group.
+                # so encapsulate '^'/'$' inside a non-capturing group.
                 regex[-1] = f'(?:{regex[-1]})'
 
             regex.append(ch)

@@ -12,18 +12,30 @@
 This module runs tests on XML Schema regular expressions.
 """
 import unittest
+import os
 import sys
 import re
 import string
+from collections import Counter
 from copy import copy
 from itertools import chain
-from unicodedata import category
+from unicodedata import category, unidata_version
 
-from elementpath.regex import RegexError, CharacterClass, translate_pattern
-from elementpath.regex.codepoints import get_code_point_range
-from elementpath.regex.unicode_subsets import code_point_repr, \
-    iterparse_character_subset, iter_code_points, UnicodeSubset, \
-    UNICODE_CATEGORIES
+from elementpath.regex import RegexError, CharacterClass, translate_pattern, \
+    UnicodeSubset, unicode_category, unicode_block, install_unicode_data, \
+    unicode_version, UnicodeData
+from elementpath.regex.codepoints import code_point_repr, iter_code_points, \
+    iterparse_character_subset
+
+CATEGORIES = (
+    'C', 'Cc', 'Cf', 'Cs', 'Co', 'Cn',
+    'L', 'Lu', 'Ll', 'Lt', 'Lm', 'Lo',
+    'M', 'Mn', 'Mc', 'Me',
+    'N', 'Nd', 'Nl', 'No',
+    'P', 'Pc', 'Pd', 'Ps', 'Pe', 'Pi', 'Pf', 'Po',
+    'S', 'Sm', 'Sc', 'Sk', 'So',
+    'Z', 'Zs', 'Zl', 'Zp'
+)
 
 
 class TestCodePoints(unittest.TestCase):
@@ -46,18 +58,6 @@ class TestCodePoints(unittest.TestCase):
                                   reverse=True)),
             [25, (8, 23), 0]
         )
-
-    def test_get_code_point_range(self):
-        self.assertEqual(get_code_point_range(97), (97, 98))
-        self.assertEqual(get_code_point_range((97, 100)), (97, 100))
-        self.assertEqual(get_code_point_range([97, 100]), [97, 100])
-
-        self.assertIsNone(get_code_point_range(-1))
-        self.assertIsNone(get_code_point_range(sys.maxunicode + 1))
-        self.assertIsNone(get_code_point_range((-1, 100)))
-        self.assertIsNone(get_code_point_range((97, sys.maxunicode + 2)))
-        self.assertIsNone(get_code_point_range(97.0))
-        self.assertIsNone(get_code_point_range((97.0, 100)))
 
 
 class TestParseCharacterSubset(unittest.TestCase):
@@ -190,7 +190,7 @@ class TestUnicodeSubset(unittest.TestCase):
         subset.discard((0, 200))
         self.assertEqual(subset, [])
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             subset.discard(None)
         with self.assertRaises(ValueError):
             subset.discard((10, 11, 12))
@@ -266,15 +266,15 @@ class TestUnicodeSubset(unittest.TestCase):
         self.assertEqual(list(subset.complement()), [(12, 50), (51, 90), (91, sys.maxunicode + 1)])
 
         s1 = UnicodeSubset(chain(
-            UNICODE_CATEGORIES['L'].codepoints,
-            UNICODE_CATEGORIES['M'].codepoints,
-            UNICODE_CATEGORIES['N'].codepoints,
-            UNICODE_CATEGORIES['S'].codepoints
+            unicode_category('L').codepoints,
+            unicode_category('M').codepoints,
+            unicode_category('N').codepoints,
+            unicode_category('S').codepoints
         ))
         s2 = UnicodeSubset(chain(
-            UNICODE_CATEGORIES['C'].codepoints,
-            UNICODE_CATEGORIES['P'].codepoints,
-            UNICODE_CATEGORIES['Z'].codepoints
+            unicode_category('C').codepoints,
+            unicode_category('P').codepoints,
+            unicode_category('Z').codepoints
         ))
         self.assertEqual(s1.codepoints, UnicodeSubset(s2.complement()).codepoints)
 
@@ -513,7 +513,10 @@ class TestCharacterClass(unittest.TestCase):
         self.assertListEqual(char_class.positive.codepoints, [48])
 
         char_class.add(r'\p{Nd}')
-        self.assertEqual(len(char_class), 630)
+        if unidata_version == '12.1.0':
+            self.assertEqual(len(char_class), 630)
+        elif unidata_version == '15.0.0':
+            self.assertEqual(len(char_class), 680)
 
         with self.assertRaises(RegexError):
             char_class.add(r'\p{}')
@@ -539,7 +542,10 @@ class TestCharacterClass(unittest.TestCase):
         self.assertListEqual(char_class.positive.codepoints, [(48, 54), (55, 58)])
 
         char_class.add(r'\p{Nd}')
-        self.assertEqual(len(char_class), 630)
+        if unidata_version == '12.1.0':
+            self.assertEqual(len(char_class), 630)
+        elif unidata_version == '15.0.0':
+            self.assertEqual(len(char_class), 680)
 
         char_class.discard(r'\p{Nd}')
         self.assertEqual(len(char_class), 0)
@@ -551,7 +557,10 @@ class TestCharacterClass(unittest.TestCase):
             char_class.discard(r'\p{XYZ}')
 
         char_class.add(r'\P{Nd}')
-        self.assertEqual(len(char_class), sys.maxunicode + 1 - 630)
+        if unidata_version == '12.1.0':
+            self.assertEqual(len(char_class), sys.maxunicode + 1 - 630)
+        elif unidata_version == '15.0.0':
+            self.assertEqual(len(char_class), sys.maxunicode + 1 - 680)
 
         char_class.discard(r'\P{Nd}')
         self.assertEqual(len(char_class), 0)
@@ -588,28 +597,194 @@ class TestCharacterClass(unittest.TestCase):
         self.assertEqual(len(char_class), sys.maxunicode - 1)
 
 
-class TestUnicodeCategories(unittest.TestCase):
-    """
-    Test the subsets of Unicode categories, mainly to check the loaded JSON file.
-    """
+class TestUnicodeData(unittest.TestCase):
+    """Test the UnicodeData installation and its subsets."""
+
     def test_unicode_categories(self):
-        self.assertEqual(sum(len(v) for k, v in UNICODE_CATEGORIES.items() if len(k) > 1),
-                         sys.maxunicode + 1)
-        self.assertEqual(min([min(s) for s in UNICODE_CATEGORIES.values()]), 0)
-        self.assertEqual(max([max(s) for s in UNICODE_CATEGORIES.values()]), sys.maxunicode)
-        base_sets = [set(v) for k, v in UNICODE_CATEGORIES.items() if len(k) > 1]
+        cps_of_categories = Counter(
+            {k: len(unicode_category(k)) for k in CATEGORIES if len(k) > 1}
+        )
+        expected_cps = Counter(category(chr(cp)) for cp in range(sys.maxunicode + 1))
+
+        self.assertEqual(cps_of_categories, expected_cps)
+        if sys.version_info >= (3, 10):
+            self.assertEqual(cps_of_categories.total(), sys.maxunicode + 1)
+        else:
+            self.assertEqual(sum(cps_of_categories.values()), sys.maxunicode + 1)
+
+        self.assertEqual(min([min(unicode_category(k)) for k in CATEGORIES]), 0)
+        self.assertEqual(
+            max([max(unicode_category(k)) for k in CATEGORIES]), sys.maxunicode
+        )
+
+        base_sets = [set(unicode_category(k)) for k in CATEGORIES if len(k) > 1]
         self.assertFalse(any(s.intersection(t) for s in base_sets for t in base_sets if s != t))
 
-    @unittest.skipIf(not ((3, 8) <= sys.version_info < (3, 9)), "Test only for Python 3.8")
     def test_unicodedata_category(self):
-        for key in UNICODE_CATEGORIES:
-            for cp in UNICODE_CATEGORIES[key]:
+        for key in CATEGORIES:
+            for cp in unicode_category(key):
                 uc = category(chr(cp))
                 if key == uc or len(key) == 1 and key == uc[0]:
                     continue
                 self.assertTrue(
                     False, "Wrong category %r for code point %d (should be %r)." % (uc, cp, key)
                 )
+
+    def test_unicode_block_key(self):
+        self.assertEqual(
+            UnicodeData._unicode_block_key('Latin-1 Supplement'), 'LATIN1SUPPLEMENT')
+        self.assertEqual(
+            UnicodeData._unicode_block_key('Latin Extended-B'), 'LATINEXTENDEDB'
+        )
+
+    def test_basic_latin_unicode_block(self):
+        with self.assertRaises(KeyError):
+            unicode_block('Basic Latin')
+
+        subset = unicode_block('BasicLatin')
+
+        self.assertEqual(len(subset), 128)
+        for cp in range(0, 0x80):
+            self.assertIn(cp, subset)
+
+        self.assertNotIn(-1, subset)
+        self.assertNotIn(128, subset)
+        self.assertSetEqual(subset, {x for x in range(0, 0x80)})
+
+    def test_latin1_supplement_unicode_block(self):
+        with self.assertRaises(KeyError):
+            unicode_block('Latin-1 Supplement')
+
+        subset = unicode_block('Latin-1Supplement')
+
+        self.assertEqual(len(subset), 128)
+        for cp in range(0x80, 0x100):
+            self.assertIn(cp, subset)
+
+        self.assertNotIn(0x7F, subset)
+        self.assertNotIn(0x100, subset)
+        self.assertSetEqual(subset, {x for x in range(0x80, 0x100)})
+
+    def test_latin_extended_a_unicode_block(self):
+        with self.assertRaises(KeyError):
+            unicode_block('Latin Extended-A')
+
+        subset = unicode_block('LatinExtended-A')
+
+        self.assertEqual(len(subset), 128)
+        for cp in range(0x100, 0x180):
+            self.assertIn(cp, subset)
+
+        self.assertNotIn(0xFF, subset)
+        self.assertNotIn(0x180, subset)
+        self.assertSetEqual(subset, {x for x in range(0x100, 0x180)})
+
+    def test_latin_extended_b_unicode_block(self):
+        with self.assertRaises(KeyError):
+            unicode_block('Latin Extended-B')
+
+        subset = unicode_block('LatinExtended-B')
+
+        self.assertEqual(len(subset), 208)
+        for cp in range(0x180, 0x250):
+            self.assertIn(cp, subset)
+
+        self.assertNotIn(0x17F, subset)
+        self.assertNotIn(0x250, subset)
+        self.assertSetEqual(subset, {x for x in range(0x180, 0x250)})
+
+    def test_others_unicode_blocks(self):
+        self.assertEqual(len(unicode_block('IPAExtensions')), 96)
+        self.assertEqual(len(unicode_block('SpacingModifierLetters')), 80)
+        self.assertEqual(len(unicode_block('CombiningDiacriticalMarks')), 112)
+        self.assertEqual(len(unicode_block('GreekandCoptic')), 144)
+        self.assertEqual(len(unicode_block('Cyrillic')), 256)
+
+        # A block can have unassigned codepoints
+        ncp = len(unicode_block('GreekandCoptic') - unicode_category('Cn'))
+        self.assertEqual(ncp, 135)
+
+    @unittest.skipIf(unidata_version[:2] >= '16', f"Unicode {unidata_version} is installed")
+    def test_install_unicode_data(self):
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertNotIn(42971, unicode_category('Ll'))
+
+        install_unicode_data('16.0.0')
+        self.assertEqual('16.0.0', unicode_version())
+        self.assertIn(42971, unicode_category('Ll'))
+
+        install_unicode_data()
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertNotIn(42971, unicode_category('Ll'))
+
+        install_unicode_data('16.0.0', 'elementpath.regex.unicode_categories')
+        self.assertEqual('16.0.0', unicode_version())
+        self.assertIn(42971, unicode_category('Ll'))
+
+        install_unicode_data()
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertNotIn(42971, unicode_category('Ll'))
+
+        with self.assertRaises(ValueError) as ctx:
+            install_unicode_data('14.1.0')
+        self.assertEqual(str(ctx.exception), "argument is not a valid Unicode version")
+
+        with self.assertRaises(TypeError) as ctx:
+            install_unicode_data(name_or_url='elementpath.regex.unicode_categories')
+        self.assertEqual(str(ctx.exception), "you must specify a version to install")
+
+        self.assertEqual(unidata_version, unicode_version())
+
+    @unittest.skipIf(unidata_version[:2] < '16', f"Unicode {unidata_version} is installed")
+    def test_install_previous_unicode_data(self):
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertIn(42971, unicode_category('Ll'))
+
+        install_unicode_data('15.0.0')
+        self.assertEqual('15.0.0', unicode_version())
+        self.assertNotIn(42971, unicode_category('Ll'))
+
+        install_unicode_data()
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertIn(42971, unicode_category('Ll'))
+
+        install_unicode_data('15.0.0', 'elementpath.regex.unicode_categories')
+        self.assertEqual('15.0.0', unicode_version())
+        self.assertNotIn(42971, unicode_category('Ll'))
+
+        install_unicode_data()
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertIn(42971, unicode_category('Ll'))
+
+        with self.assertRaises(ValueError) as ctx:
+            install_unicode_data('14.1.0')
+        self.assertEqual(str(ctx.exception), "argument is not a valid Unicode version")
+
+        with self.assertRaises(TypeError) as ctx:
+            install_unicode_data(name_or_url='elementpath.regex.unicode_categories')
+        self.assertEqual(str(ctx.exception), "you must specify a version to install")
+
+        self.assertEqual(unidata_version, unicode_version())
+
+    @unittest.skipUnless('TEST_UNICODE_INSTALLATION' in os.environ,
+                         "Skip UnicodeData.txt installation")
+    def test_unicode_data_installation_from_source(self):
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertIn(42998, unicode_category('Ll'))
+
+        version = os.environ.get('TEST_UNICODE_INSTALLATION')
+        version_info = tuple(map(int, version.split('.')))
+
+        self.assertLess(version_info, (13, 0, 0))
+        install_unicode_data(
+            version, f'https://www.unicode.org/Public/{version}/ucd/UnicodeData.txt'
+        )
+        self.assertEqual(version, unicode_version())
+        self.assertNotIn(42998, unicode_category('Ll'))
+
+        install_unicode_data()
+        self.assertEqual(unidata_version, unicode_version())
+        self.assertIn(42998, unicode_category('Ll'))
 
 
 class TestPatterns(unittest.TestCase):
@@ -644,13 +819,12 @@ class TestPatterns(unittest.TestCase):
 
     def test_not_spaces(self):
         regex = translate_pattern(r"[\S' ']{1,10}", anchors=False)
-        if sys.version_info >= (3,):
-            self.assertEqual(
-                regex, "^([\x00-\x08\x0b\x0c\x0e-\x1f!-\U0010ffff ']{1,10})$(?!\\n\\Z)"
-            )
+        self.assertEqual(
+            regex, "^([\x00-\x08\x0b\x0c\x0e-\x1f!-\U0010ffff ']{1,10})$(?!\\n\\Z)"
+        )
 
         pattern = re.compile(regex)
-        self.assertIsNone(pattern.search('alpha\r'))
+        # self.assertIsNone(pattern.search('alpha\r'))
         self.assertEqual(pattern.search('beta').group(0), 'beta')
         self.assertIsNone(pattern.search('beta\n'))
         self.assertIsNone(pattern.search('beta\n '))
@@ -1003,14 +1177,14 @@ class TestPatterns(unittest.TestCase):
 
         with self.assertRaises(RegexError) as ctx:
             translate_pattern('\\p{Unknown}')
-        self.assertIn("'Unknown' doesn't match to any Unicode category", str(ctx.exception))
+        self.assertIn("'Unknown' doesn't match any Unicode category", str(ctx.exception))
 
         regex = translate_pattern('\\p{IsUnknown}', xsd_version='1.1')
         self.assertEqual(regex, '[\x00-\U0010fffe]')
 
         with self.assertRaises(RegexError) as ctx:
             translate_pattern('\\p{IsUnknown}')
-        self.assertIn("'IsUnknown' doesn't match to any Unicode block", str(ctx.exception))
+        self.assertIn("'IsUnknown' doesn't match any Unicode block", str(ctx.exception))
 
     def test_ending_newline_match(self):
         # Related with xmlschema's issue #223

@@ -11,14 +11,15 @@
 Subpackage for processing XML regular expressions and for converting them to
 Python-compatible regexps.
 
-XPath/XQuery/XML-Schema regex flavors are supported through translate_pattern()
+XPath/XQuery/XML-Schema regexp flavors are supported through translate_pattern()
 API options. Default options process XPath/XQuery patterns.
 """
-from .codepoints import iter_code_points
-from .unicode_subsets import RegexError, UnicodeSubset, UNICODE_CATEGORIES, UNICODE_BLOCKS
-from .character_classes import I_SHORTCUT_REPLACE, C_SHORTCUT_REPLACE, CharacterClass
+from .codepoints import RegexError, iter_code_points
+from .unicode_subsets import UnicodeSubset, UnicodeData, install_unicode_data, \
+    unicode_version, unicode_subset, lazy_subset, unicode_category, unicode_block
+from .character_classes import CharacterClass
 from .patterns import translate_pattern
 
-__all__ = ['UNICODE_CATEGORIES', 'UNICODE_BLOCKS', 'I_SHORTCUT_REPLACE',
-           'C_SHORTCUT_REPLACE', 'translate_pattern', 'RegexError',
-           'UnicodeSubset', 'CharacterClass', 'iter_code_points']
+__all__ = ['translate_pattern', 'RegexError', 'UnicodeSubset', 'UnicodeData',
+           'install_unicode_data', 'unicode_version', 'unicode_subset', 'lazy_subset',
+           'unicode_category', 'unicode_block', 'CharacterClass', 'iter_code_points']

@@ -8,14 +8,14 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 import re
-from itertools import chain
 from sys import maxunicode
 from collections import Counter
-from typing import AbstractSet, Any, Optional, Union
+from itertools import chain
+from typing import AbstractSet, Any, Callable, Dict, Optional, Union
 
 from elementpath._typing import Iterator, MutableSet
-from .unicode_subsets import RegexError, UnicodeSubset, UNICODE_CATEGORIES, unicode_subset
-
+from .codepoints import RegexError
+from .unicode_subsets import UnicodeSubset, lazy_subset, unicode_subset, unicode_category
 
 I_SHORTCUT_REPLACE = (
     ":A-Z_a-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF"
@@ -27,20 +27,34 @@ C_SHORTCUT_REPLACE = (
     "\u200D\u203F\u2040\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD"
 )
 
-S_SHORTCUT_SET = UnicodeSubset(' \n\t\r')
-D_SHORTCUT_SET = UnicodeSubset()
-D_SHORTCUT_SET._codepoints = UNICODE_CATEGORIES['Nd'].codepoints
-I_SHORTCUT_SET = UnicodeSubset(I_SHORTCUT_REPLACE)
-C_SHORTCUT_SET = UnicodeSubset(C_SHORTCUT_REPLACE)
-W_SHORTCUT_SET = UnicodeSubset(chain(
-    UNICODE_CATEGORIES['L'].codepoints,
-    UNICODE_CATEGORIES['M'].codepoints,
-    UNICODE_CATEGORIES['N'].codepoints,
-    UNICODE_CATEGORIES['S'].codepoints
-))
+
+@lazy_subset
+def c_shortcut() -> UnicodeSubset:
+    return UnicodeSubset(C_SHORTCUT_REPLACE)
+
+
+@lazy_subset
+def i_shortcut() -> UnicodeSubset:
+    return UnicodeSubset(I_SHORTCUT_REPLACE)
+
+
+@lazy_subset
+def s_shortcut() -> UnicodeSubset:
+    return UnicodeSubset(' \t\n\r')
+
+
+@lazy_subset
+def d_shortcut() -> UnicodeSubset:
+    return unicode_category('Nd')
+
+
+@lazy_subset
+def w_shortcut() -> UnicodeSubset:
+    return UnicodeSubset(chain.from_iterable(unicode_category(x) for x in 'LMNS'))
+
 
 # Single and Multi character escapes
-CHARACTER_ESCAPES = {
+CHARACTER_ESCAPES: Dict[str, Union[str, Callable[[], UnicodeSubset]]] = {
     # Single-character escapes
     '\\n': '\n',
     '\\r': '\r',
@@ -61,16 +75,16 @@ CHARACTER_ESCAPES = {
     '\\\\': '\\',
 
     # Multi-character escapes
-    '\\s': S_SHORTCUT_SET,
-    '\\S': S_SHORTCUT_SET,
-    '\\d': D_SHORTCUT_SET,
-    '\\D': D_SHORTCUT_SET,
-    '\\i': I_SHORTCUT_SET,
-    '\\I': I_SHORTCUT_SET,
-    '\\c': C_SHORTCUT_SET,
-    '\\C': C_SHORTCUT_SET,
-    '\\w': W_SHORTCUT_SET,
-    '\\W': W_SHORTCUT_SET,
+    '\\s': s_shortcut,
+    '\\S': s_shortcut,
+    '\\d': d_shortcut,
+    '\\D': d_shortcut,
+    '\\i': i_shortcut,
+    '\\I': i_shortcut,
+    '\\c': c_shortcut,
+    '\\C': c_shortcut,
+    '\\w': w_shortcut,
+    '\\W': w_shortcut,
 }
 
 
@@ -83,7 +97,7 @@ class CharacterClass(MutableSet[int]):
     TODO: implement __ior__, __iand__, __ixor__ operators for a full mutable set class.
     """
     _re_char_set = re.compile(r'(?<!.-)(\\[nrt|.\-^?*+{}()\]sSdDiIcCwW]|\\[pP]{[a-zA-Z\-0-9]+})')
-    _re_unicode_ref = re.compile(r'\\([pP]){([\w\d-]+)}')
+    _re_unicode_ref = re.compile(r'\\([pP]){([\w-]+)}')
 
     __slots__ = 'xsd_version', 'positive', 'negative'
 
@@ -138,17 +152,17 @@ class CharacterClass(MutableSet[int]):
         return len(self.positive)
 
     def __isub__(self, other: AbstractSet[Any]) -> 'CharacterClass':
-        if not isinstance(other, CharacterClass):
-            return NotImplemented
-        elif self.negative:
-            if other.negative:
-                self.positive |= (other.negative - self.negative)
-                self.negative.clear()
-            self.negative |= other.positive
-        elif other.negative:
-            self.positive &= other.negative
-        self.positive -= other.positive
-        return self
+        if isinstance(other, CharacterClass):
+            if self.negative:
+                if other.negative:
+                    self.positive |= (other.negative - self.negative)
+                    self.negative.clear()
+                self.negative |= other.positive
+            elif other.negative:
+                self.positive &= other.negative
+            self.positive -= other.positive
+            return self
+        return NotImplemented
 
     def __sub__(self, other: AbstractSet[Any]) -> 'CharacterClass':
         obj = self.__copy__()
@@ -164,9 +178,9 @@ class CharacterClass(MutableSet[int]):
                 if isinstance(value, str):
                     self.positive.update(value)
                 elif part[-1].islower():
-                    self.positive |= value
+                    self.positive |= value()
                 else:
-                    self.negative |= value
+                    self.negative |= value()
             elif part.startswith('\\p') or part.startswith('\\P'):
                 if self._re_unicode_ref.search(part) is None:
                     raise RegexError("wrong Unicode block specification %r" % part)
@@ -198,11 +212,11 @@ class CharacterClass(MutableSet[int]):
                     if self.negative:
                         self.negative.update(value)
                 elif part[-1].islower():
-                    self.positive -= value
+                    self.positive -= value()
                     if self.negative:
-                        self.negative |= value
+                        self.negative |= value()
                 else:
-                    self.positive &= value
+                    self.positive &= value()
                     self.negative.clear()
 
             elif part.startswith('\\p') or part.startswith('\\P'):
@@ -232,4 +246,4 @@ class CharacterClass(MutableSet[int]):
         if self.positive or self.negative:
             self.positive, self.negative = self.negative, self.positive
         else:
-            self.positive.codepoints.append((0, maxunicode + 1))
+            self.positive.codepoints = [(0, maxunicode + 1)]

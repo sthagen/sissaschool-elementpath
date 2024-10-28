@@ -8,113 +8,33 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 """
-This module defines Unicode character categories and blocks.
+This module defines a class for handling Unicode subsets with less usage of memory.
 """
+from collections import defaultdict
+from functools import wraps
 from sys import maxunicode
-from typing import cast, List, Union, Optional
+from types import ModuleType
+from typing import cast, Callable, Dict, List, Optional, Tuple, Union
+from unicodedata import unidata_version
 
 from elementpath._typing import Iterable, Iterator, MutableSet
-from .unicode_categories import RAW_UNICODE_CATEGORIES
-from .codepoints import CodePoint, code_point_order, code_point_repr, \
-    iter_code_points, get_code_point_range
+from .codepoints import RegexError, CodePoint, code_point_order, \
+    code_point_repr, iter_code_points, iterparse_character_subset
+from . import unicode_blocks
+from . import unicode_categories
 
-CodePointsArgType = Union[str, 'UnicodeSubset', List[CodePoint], Iterable[CodePoint]]
+__all__ = ['UnicodeSubset', 'UnicodeData', 'install_unicode_data', 'unicode_version',
+           'lazy_subset', 'unicode_subset', 'unicode_category', 'unicode_block']
+
+UNICODE_VERSIONS = (
+    '16.0.0', '15.1.0', '15.0.0', '14.0.0', '13.0.0', '12.1.0', '12.0.0', '11.0.0',
+    '10.0.0', '9.0.0', '8.0.0', '7.0.0', '6.3.0', '6.2.0', '6.1.0', '6.0.0',
+    '5.2.0', '5.1.0', '5.0.0', '4.1.0', '4.0.1', '4.0.0', '3.2.0', '3.1.1',
+    '3.1.0', '3.0.1', '3.0.0', '2.1.9', '2.1.8', '2.1.5', '2.1.2', '2.0.0'
+)
 
 
-class RegexError(Exception):
-    """
-    Error in a regular expression or in a character class specification.
-    This exception is derived from `Exception` base class and is raised
-    only by the regex subpackage.
-    """
-
-
-def iterparse_character_subset(s: str, expand_ranges: bool = False) -> Iterator[CodePoint]:
-    """
-    Parses a regex character subset, generating a sequence of code points
-    and code points ranges. An unescaped hyphen (-) that is not at the
-    start or at the and is interpreted as range specifier.
-
-    :param s: a string representing the character subset.
-    :param expand_ranges: if set to `True` then expands character ranges.
-    :return: yields integers or couples of integers.
-    """
-    escaped = False
-    on_range = False
-    char = ''
-    length = len(s)
-    subset_index_iterator = iter(range(len(s)))
-    for k in subset_index_iterator:
-        if k == 0:
-            char = s[0]
-            if char == '\\':
-                escaped = True
-            elif char in r'[]' and length > 1:
-                raise RegexError("bad character %r at position 0" % char)
-            elif expand_ranges:
-                yield ord(char)
-            elif length <= 2 or s[1] != '-':
-                yield ord(char)
-        elif s[k] == '-':
-            if escaped or (k == length - 1):
-                char = s[k]
-                yield ord(char)
-                escaped = False
-            elif on_range:
-                char = s[k]
-                yield ord(char)
-                on_range = False
-            else:
-                # Parse character range
-                on_range = True
-                k = next(subset_index_iterator)
-                end_char = s[k]
-                if end_char == '\\' and (k < length - 1):
-                    if s[k + 1] in r'-|.^?*+{}()[]':
-                        k = next(subset_index_iterator)
-                        end_char = s[k]
-                    elif s[k + 1] in r'sSdDiIcCwWpP':
-                        msg = "bad character range '%s-\\%s' at position %d: %r"
-                        raise RegexError(msg % (char, s[k + 1], k - 2, s))
-
-                if ord(char) > ord(end_char):
-                    msg = "bad character range '%s-%s' at position %d: %r"
-                    raise RegexError(msg % (char, end_char, k - 2, s))
-                elif expand_ranges:
-                    yield from range(ord(char) + 1, ord(end_char) + 1)
-                else:
-                    yield ord(char), ord(end_char) + 1
-
-        elif s[k] in r'|.^?*+{}()':
-            if escaped:
-                escaped = False
-            on_range = False
-            char = s[k]
-            yield ord(char)
-        elif s[k] in r'[]':
-            if not escaped and length > 1:
-                raise RegexError("bad character %r at position %d" % (s[k], k))
-            escaped = on_range = False
-            char = s[k]
-            if k >= length - 2 or s[k + 1] != '-':
-                yield ord(char)
-        elif s[k] == '\\':
-            if escaped:
-                escaped = on_range = False
-                char = '\\'
-                yield ord(char)
-            else:
-                escaped = True
-        else:
-            if escaped:
-                escaped = False
-                yield ord('\\')
-            on_range = False
-            char = s[k]
-            if k >= length - 2 or s[k + 1] != '-':
-                yield ord(char)
-    if escaped:
-        yield ord('\\')
+CodePointsArgType = Union[None, str, 'UnicodeSubset', List[CodePoint], Iterable[CodePoint]]
 
 
 class UnicodeSubset(MutableSet[CodePoint]):
@@ -129,13 +49,13 @@ class UnicodeSubset(MutableSet[CodePoint]):
     __slots__ = '_codepoints',
     _codepoints: List[CodePoint]
 
-    def __init__(self, codepoints: Optional[CodePointsArgType] = None) -> None:
+    def __init__(self, codepoints: CodePointsArgType = None) -> None:
         if not codepoints:
             self._codepoints = list()
         elif isinstance(codepoints, list):
             self._codepoints = sorted(codepoints, key=code_point_order)
         elif isinstance(codepoints, UnicodeSubset):
-            self._codepoints = codepoints.codepoints.copy()
+            self._codepoints = codepoints._codepoints.copy()
         else:
             self._codepoints = list()
             self.update(codepoints)
@@ -143,6 +63,10 @@ class UnicodeSubset(MutableSet[CodePoint]):
     @property
     def codepoints(self) -> List[CodePoint]:
         return self._codepoints
+
+    @codepoints.setter
+    def codepoints(self, codepoints: Iterable[CodePoint]) -> None:
+        self._codepoints = sorted(codepoints, key=code_point_order)
 
     def __repr__(self) -> str:
         return '%s(%r)' % (self.__class__.__name__, str(self))
@@ -154,7 +78,9 @@ class UnicodeSubset(MutableSet[CodePoint]):
         return self.__copy__()
 
     def __copy__(self) -> 'UnicodeSubset':
-        return UnicodeSubset(self._codepoints)
+        subset = self.__class__()
+        subset._codepoints = self._codepoints.copy()
+        return subset
 
     def __reversed__(self) -> Iterator[int]:
         for item in reversed(self._codepoints):
@@ -167,11 +93,14 @@ class UnicodeSubset(MutableSet[CodePoint]):
         last_cp = 0
         for cp in self._codepoints:
             if isinstance(cp, int):
-                cp = cp, cp + 1
+                cp0 = cp
+                cp1 = cp + 1
+            else:
+                cp0, cp1 = cp
 
-            diff = cp[0] - last_cp
+            diff = cp0 - last_cp
             if diff > 2:
-                yield last_cp, cp[0]
+                yield last_cp, cp0
             elif diff == 2:
                 yield last_cp
                 yield last_cp + 1
@@ -179,7 +108,7 @@ class UnicodeSubset(MutableSet[CodePoint]):
                 yield last_cp
             elif diff:
                 raise ValueError("unordered code points found in {!r}".format(self))
-            last_cp = cp[1]
+            last_cp = cp1
 
         if last_cp < maxunicode:
             yield last_cp, maxunicode + 1
@@ -235,38 +164,53 @@ class UnicodeSubset(MutableSet[CodePoint]):
                     self.add(cp)
 
     def add(self, value: CodePoint) -> None:
-        try:
-            start_value, end_value = get_code_point_range(value)  # type: ignore[misc]
-        except TypeError:
-            raise ValueError("{!r} is not a Unicode code point value/range".format(value))
+        if isinstance(value, int):
+            if 0 <= value <= maxunicode:
+                start_cp = value
+                end_cp = value + 1
+            else:
+                raise ValueError(f"{value!r} is not a Unicode code point value")
+
+        elif 0 <= value[0] < value[1] <= maxunicode + 1:
+            start_cp, end_cp = value
+        else:
+            raise ValueError(f"{value!r} is not a Unicode code point range")
 
         code_points = self._codepoints
         last_index = len(code_points) - 1
         for k, cp in enumerate(code_points):
             if isinstance(cp, int):
-                cp = cp, cp + 1
+                cp0 = cp
+                cp1 = cp + 1
+            else:
+                cp0, cp1 = cp
 
-            if end_value < cp[0]:
+            if end_cp < cp0:
                 code_points.insert(k, value)
-            elif start_value > cp[1]:
+            elif start_cp > cp1:
                 continue
-            elif end_value > cp[1]:
+            elif end_cp > cp1:
                 if k == last_index:
-                    code_points[k] = min(cp[0], start_value), end_value
+                    code_points[k] = min(cp0, start_cp), end_cp
                 else:
                     next_cp = code_points[k + 1]
                     higher_bound = next_cp if isinstance(next_cp, int) else next_cp[0]
-                    if end_value <= higher_bound:
-                        code_points[k] = min(cp[0], start_value), end_value
+                    if end_cp <= higher_bound:
+                        code_points[k] = min(cp0, start_cp), end_cp
                     else:
-                        code_points[k] = min(cp[0], start_value), higher_bound
-                        start_value = higher_bound
+                        code_points[k] = min(cp0, start_cp), higher_bound
+                        start_cp = higher_bound
                         continue
-            elif start_value < cp[0]:
-                code_points[k] = start_value, cp[1]
+            elif start_cp < cp0:
+                code_points[k] = start_cp, cp1
             break
         else:
             self._codepoints.append(value)
+
+    def difference(self, other: 'UnicodeSubset') -> 'UnicodeSubset':
+        subset = self.__copy__()
+        subset.difference_update(other)
+        return subset
 
     def difference_update(self, *others: Union[str, Iterable[CodePoint]]) -> None:
         for value in others:
@@ -278,41 +222,51 @@ class UnicodeSubset(MutableSet[CodePoint]):
                     self.discard(cp)
 
     def discard(self, value: CodePoint) -> None:
-        try:
-            start_cp, end_cp = get_code_point_range(value)  # type: ignore[misc]
-        except TypeError:
-            raise ValueError("{!r} is not a Unicode code point value/range".format(value))
+        if isinstance(value, int):
+            if 0 <= value <= maxunicode:
+                start_cp = value
+                end_cp = value + 1
+            else:
+                raise ValueError(f"{value!r} is not a Unicode code point value")
 
-        code_points = self._codepoints
-        for k in reversed(range(len(code_points))):
-            cp = code_points[k]
+        elif 0 <= value[0] < value[1] <= maxunicode + 1:
+            start_cp, end_cp = value
+        else:
+            raise ValueError(f"{value!r} is not a Unicode code point range")
+
+        codepoints = self._codepoints
+        for k in reversed(range(len(codepoints))):
+            cp = codepoints[k]
             if isinstance(cp, int):
-                cp = cp, cp + 1
+                cp0 = cp
+                cp1 = cp + 1
+            else:
+                cp0, cp1 = cp
 
-            if start_cp >= cp[1]:
+            if start_cp >= cp1:
                 break
-            elif end_cp >= cp[1]:
-                if start_cp <= cp[0]:
-                    del code_points[k]
-                elif start_cp - cp[0] > 1:
-                    code_points[k] = cp[0], start_cp
+            elif end_cp >= cp1:
+                if start_cp <= cp0:
+                    del codepoints[k]
+                elif start_cp - cp0 > 1:
+                    codepoints[k] = cp0, start_cp
                 else:
-                    code_points[k] = cp[0]
-            elif end_cp > cp[0]:
-                if start_cp <= cp[0]:
-                    if cp[1] - end_cp > 1:
-                        code_points[k] = end_cp, cp[1]
+                    codepoints[k] = cp0
+            elif end_cp > cp0:
+                if start_cp <= cp0:
+                    if cp1 - end_cp > 1:
+                        codepoints[k] = end_cp, cp1
                     else:
-                        code_points[k] = cp[1] - 1
+                        codepoints[k] = cp1 - 1
                 else:
-                    if cp[1] - end_cp > 1:
-                        code_points.insert(k + 1, (end_cp, cp[1]))
+                    if cp1 - end_cp > 1:
+                        codepoints.insert(k + 1, (end_cp, cp1))
                     else:
-                        code_points.insert(k + 1, cp[1] - 1)
-                    if start_cp - cp[0] > 1:
-                        code_points[k] = cp[0], start_cp
+                        codepoints.insert(k + 1, cp1 - 1)
+                    if start_cp - cp0 > 1:
+                        codepoints[k] = cp0, start_cp
                     else:
-                        code_points[k] = cp[0]
+                        codepoints[k] = cp0
 
     #
     # MutableSet's mixin methods override
@@ -342,7 +296,7 @@ class UnicodeSubset(MutableSet[CodePoint]):
         return self
 
     def __or__(self, other: object) -> 'UnicodeSubset':
-        obj = self.copy()
+        obj = self.__copy__()
         return obj.__ior__(other)
 
     def __isub__(self, other: object) -> 'UnicodeSubset':
@@ -360,7 +314,7 @@ class UnicodeSubset(MutableSet[CodePoint]):
         return self
 
     def __sub__(self, other: object) -> 'UnicodeSubset':
-        obj = self.copy()
+        obj = self.__copy__()
         return obj.__isub__(other)
 
     __rsub__ = __sub__
@@ -374,7 +328,7 @@ class UnicodeSubset(MutableSet[CodePoint]):
         return self
 
     def __and__(self, other: object) -> 'UnicodeSubset':
-        obj = self.copy()
+        obj = self.__copy__()
         return obj.__iand__(other)
 
     def __ixor__(self, other: object) -> 'UnicodeSubset':
@@ -394,126 +348,292 @@ class UnicodeSubset(MutableSet[CodePoint]):
         return self
 
     def __xor__(self, other: object) -> 'UnicodeSubset':
-        obj = self.copy()
+        obj = self.__copy__()
         return obj.__ixor__(other)
 
 
-UNICODE_CATEGORIES = {k: UnicodeSubset(cast(List[CodePoint], v))
-                      for k, v in RAW_UNICODE_CATEGORIES.items()}
+def iterparse_unicode_data(url: str) -> Iterator[Tuple[int, str]]:
+    """Iterate UnicodeData.txt source giving back codepoints and categories."""
+    from urllib.request import urlopen
+
+    with urlopen(url) as res:
+        prev_cp = -1
+
+        for line in res.readlines():
+            fields = line.split(b';')
+            cp = int(fields[0], 16)
+            cat = fields[2].decode('utf-8')
+
+            if cp - prev_cp > 1:
+                if fields[1].endswith(b', Last>'):
+                    # Ranges of codepoints expressed with First and then Last
+                    for x in range(prev_cp + 1, cp):
+                        yield x, cat
+                else:
+                    # For default is 'Cn' that means 'Other, not assigned'
+                    for x in range(prev_cp + 1, cp):
+                        yield x, 'Cn'
+
+            prev_cp = cp
+            yield cp, cat
+
+    while cp < maxunicode:
+        cp += 1
+        yield cp, 'Cn'
 
 
-# See http://www.unicode.org/Public/UNIDATA/Blocks.txt
-UNICODE_BLOCKS = {
-    'IsBasicLatin': UnicodeSubset('\u0000-\u007F'),
-    'IsLatin-1Supplement': UnicodeSubset('\u0080-\u00FF'),
-    'IsLatinExtended-A': UnicodeSubset('\u0100-\u017F'),
-    'IsLatinExtended-B': UnicodeSubset('\u0180-\u024F'),
-    'IsIPAExtensions': UnicodeSubset('\u0250-\u02AF'),
-    'IsSpacingModifierLetters': UnicodeSubset('\u02B0-\u02FF'),
-    'IsCombiningDiacriticalMarks': UnicodeSubset('\u0300-\u036F'),
-    'IsGreek': UnicodeSubset('\u0370-\u03FF'),
-    'IsCyrillic': UnicodeSubset('\u0400-\u04FF'),
-    'IsArmenian': UnicodeSubset('\u0530-\u058F'),
-    'IsHebrew': UnicodeSubset('\u0590-\u05FF'),
-    'IsArabic': UnicodeSubset('\u0600-\u06FF'),
-    'IsSyriac': UnicodeSubset('\u0700-\u074F'),
-    'IsThaana': UnicodeSubset('\u0780-\u07BF'),
-    'IsDevanagari': UnicodeSubset('\u0900-\u097F'),
-    'IsBengali': UnicodeSubset('\u0980-\u09FF'),
-    'IsGurmukhi': UnicodeSubset('\u0A00-\u0A7F'),
-    'IsGujarati': UnicodeSubset('\u0A80-\u0AFF'),
-    'IsOriya': UnicodeSubset('\u0B00-\u0B7F'),
-    'IsTamil': UnicodeSubset('\u0B80-\u0BFF'),
-    'IsTelugu': UnicodeSubset('\u0C00-\u0C7F'),
-    'IsKannada': UnicodeSubset('\u0C80-\u0CFF'),
-    'IsMalayalam': UnicodeSubset('\u0D00-\u0D7F'),
-    'IsSinhala': UnicodeSubset('\u0D80-\u0DFF'),
-    'IsThai': UnicodeSubset('\u0E00-\u0E7F'),
-    'IsLao': UnicodeSubset('\u0E80-\u0EFF'),
-    'IsTibetan': UnicodeSubset('\u0F00-\u0FFF'),
-    'IsMyanmar': UnicodeSubset('\u1000-\u109F'),
-    'IsGeorgian': UnicodeSubset('\u10A0-\u10FF'),
-    'IsHangulJamo': UnicodeSubset('\u1100-\u11FF'),
-    'IsEthiopic': UnicodeSubset('\u1200-\u137F'),
-    'IsCherokee': UnicodeSubset('\u13A0-\u13FF'),
-    'IsUnifiedCanadianAboriginalSyllabics': UnicodeSubset('\u1400-\u167F'),
-    'IsOgham': UnicodeSubset('\u1680-\u169F'),
-    'IsRunic': UnicodeSubset('\u16A0-\u16FF'),
-    'IsKhmer': UnicodeSubset('\u1780-\u17FF'),
-    'IsMongolian': UnicodeSubset('\u1800-\u18AF'),
-    'IsLatinExtendedAdditional': UnicodeSubset('\u1E00-\u1EFF'),
-    'IsGreekExtended': UnicodeSubset('\u1F00-\u1FFF'),
-    'IsGeneralPunctuation': UnicodeSubset('\u2000-\u206F'),
-    'IsSuperscriptsandSubscripts': UnicodeSubset('\u2070-\u209F'),
-    'IsCurrencySymbols': UnicodeSubset('\u20A0-\u20CF'),
-    'IsCombiningMarksforSymbols': UnicodeSubset('\u20D0-\u20FF'),
-    'IsLetterlikeSymbols': UnicodeSubset('\u2100-\u214F'),
-    'IsNumberForms': UnicodeSubset('\u2150-\u218F'),
-    'IsArrows': UnicodeSubset('\u2190-\u21FF'),
-    'IsMathematicalOperators': UnicodeSubset('\u2200-\u22FF'),
-    'IsMiscellaneousTechnical': UnicodeSubset('\u2300-\u23FF'),
-    'IsControlPictures': UnicodeSubset('\u2400-\u243F'),
-    'IsOpticalCharacterRecognition': UnicodeSubset('\u2440-\u245F'),
-    'IsEnclosedAlphanumerics': UnicodeSubset('\u2460-\u24FF'),
-    'IsBoxDrawing': UnicodeSubset('\u2500-\u257F'),
-    'IsBlockElements': UnicodeSubset('\u2580-\u259F'),
-    'IsGeometricShapes': UnicodeSubset('\u25A0-\u25FF'),
-    'IsMiscellaneousSymbols': UnicodeSubset('\u2600-\u26FF'),
-    'IsDingbats': UnicodeSubset('\u2700-\u27BF'),
-    'IsBraillePatterns': UnicodeSubset('\u2800-\u28FF'),
-    'IsCJKRadicalsSupplement': UnicodeSubset('\u2E80-\u2EFF'),
-    'IsKangxiRadicals': UnicodeSubset('\u2F00-\u2FDF'),
-    'IsIdeographicDescriptionCharacters': UnicodeSubset('\u2FF0-\u2FFF'),
-    'IsCJKSymbolsandPunctuation': UnicodeSubset('\u3000-\u303F'),
-    'IsHiragana': UnicodeSubset('\u3040-\u309F'),
-    'IsKatakana': UnicodeSubset('\u30A0-\u30FF'),
-    'IsBopomofo': UnicodeSubset('\u3100-\u312F'),
-    'IsHangulCompatibilityJamo': UnicodeSubset('\u3130-\u318F'),
-    'IsKanbun': UnicodeSubset('\u3190-\u319F'),
-    'IsBopomofoExtended': UnicodeSubset('\u31A0-\u31BF'),
-    'IsEnclosedCJKLettersandMonths': UnicodeSubset('\u3200-\u32FF'),
-    'IsCJKCompatibility': UnicodeSubset('\u3300-\u33FF'),
-    'IsCJKUnifiedIdeographsExtensionA': UnicodeSubset('\u3400-\u4DB5'),
-    'IsCJKUnifiedIdeographs': UnicodeSubset('\u4E00-\u9FFF'),
-    'IsYiSyllables': UnicodeSubset('\uA000-\uA48F'),
-    'IsYiRadicals': UnicodeSubset('\uA490-\uA4CF'),
-    'IsHangulSyllables': UnicodeSubset('\uAC00-\uD7A3'),
-    'IsHighSurrogates': UnicodeSubset('\uD800-\uDB7F'),
-    'IsHighPrivateUseSurrogates': UnicodeSubset('\uDB80-\uDBFF'),
-    'IsLowSurrogates': UnicodeSubset('\uDC00-\uDFFF'),
-    'IsPrivateUse': UnicodeSubset('\uE000-\uF8FF\U000F0000-\U000FFFFF\U00100000-\U0010FFFF'),
-    'IsCJKCompatibilityIdeographs': UnicodeSubset('\uF900-\uFAFF'),
-    'IsAlphabeticPresentationForms': UnicodeSubset('\uFB00-\uFB4F'),
-    'IsArabicPresentationForms-A': UnicodeSubset('\uFB50-\uFDFF'),
-    'IsCombiningHalfMarks': UnicodeSubset('\uFE20-\uFE2F'),
-    'IsCJKCompatibilityForms': UnicodeSubset('\uFE30-\uFE4F'),
-    'IsSmallFormVariants': UnicodeSubset('\uFE50-\uFE6F'),
-    'IsArabicPresentationForms-B': UnicodeSubset('\uFE70-\uFEFE'),
-    'IsSpecials': UnicodeSubset('\uFEFF\uFFF0-\uFFFD'),
-    'IsHalfwidthandFullwidthForms': UnicodeSubset('\uFF00-\uFFEF'),
-    'IsOldItalic': UnicodeSubset('\U00010300-\U0001032F'),
-    'IsGothic': UnicodeSubset('\U00010330-\U0001034F'),
-    'IsDeseret': UnicodeSubset('\U00010400-\U0001044F'),
-    'IsByzantineMusicalSymbols': UnicodeSubset('\U0001D000-\U0001D0FF'),
-    'IsMusicalSymbols': UnicodeSubset('\U0001D100-\U0001D1FF'),
-    'IsMathematicalAlphanumericSymbols': UnicodeSubset('\U0001D400-\U0001D7FF'),
-    'IsEmoticons': UnicodeSubset('\U0001F600-\U0001F64F'),
-    'IsCJKUnifiedIdeographsExtensionB': UnicodeSubset('\U00020000-\U0002A6D6'),
-    'IsCJKCompatibilityIdeographsSupplement': UnicodeSubset('\U0002F800-\U0002FA1F'),
-    'IsTags': UnicodeSubset('\U000E0000-\U000E007F'),
-}
+def get_categories_from_url(url: str) -> Dict[str, UnicodeSubset]:
+    categories: Dict[str, List[CodePoint]] = defaultdict(list)
 
-UNICODE_BLOCKS['IsPrivateUse'].update('\U000F0000-\U0010FFFD')
+    major_category = 'C'
+    major_start_cp, major_next_cp = 0, 1
+
+    minor_category = 'Cc'
+    minor_start_cp, minor_next_cp = 0, 1
+
+    for cp, cat in iterparse_unicode_data(url):
+
+        if cat[0] != major_category:
+            if cp > major_next_cp:
+                categories[major_category].append((major_start_cp, cp))
+            else:
+                categories[major_category].append(major_start_cp)
+
+            major_category = cat[0]
+            major_start_cp, major_next_cp = cp, cp + 1
+
+        if cat != minor_category:
+            if cp > minor_next_cp:
+                categories[minor_category].append((minor_start_cp, cp))
+            else:
+                categories[minor_category].append(minor_start_cp)
+
+            minor_category = cat
+            minor_start_cp, minor_next_cp = cp, cp + 1
+
+    else:
+        if major_next_cp == maxunicode + 1:
+            categories[major_category].append(major_start_cp)
+        else:
+            categories[major_category].append((major_start_cp, maxunicode + 1))
+
+        if minor_next_cp == maxunicode + 1:
+            categories[minor_category].append(minor_start_cp)
+        else:
+            categories[minor_category].append((minor_start_cp, maxunicode + 1))
+
+    return {k: UnicodeSubset(v) for k, v in categories.items()}
+
+
+def get_categories(version_info: Tuple[int, ...], module: ModuleType) -> Dict[str, UnicodeSubset]:
+    categories = {k: v.copy() for k, v in module.UNICODE_CATEGORIES.items()}
+    for name in module.__dict__:
+        if not name.startswith('DIFF_CATEGORIES_VER_'):
+            continue
+
+        diff_version = name[20:].replace('_', '.')
+        if version_info < tuple(int(x) for x in diff_version.split('.')):
+            break
+
+        for k, (exclude_cps, insert_cps) in getattr(unicode_categories, name).items():
+            values = []
+            additional = iter(insert_cps)
+            cpa = next(additional, None)
+            cpa_int = cpa[0] if isinstance(cpa, tuple) else cpa
+
+            for cp in categories[k]:
+                if cp in exclude_cps:
+                    continue
+
+                cp_int = cp[0] if isinstance(cp, tuple) else cp
+                while cpa_int is not None and cpa_int <= cp_int:
+                    values.append(cpa)
+                    cpa = next(additional, None)
+                    cpa_int = cpa[0] if isinstance(cpa, tuple) else cpa
+                else:
+                    values.append(cp)
+            else:
+                if cpa is not None:
+                    values.append(cpa)
+                    values.extend(additional)
+
+            categories[k] = values
+
+    return {k: UnicodeSubset(v) for k, v in categories.items()}
+
+
+class UnicodeData:
+
+    _blocks: Dict[str, Union[str, UnicodeSubset]]
+
+    @staticmethod
+    def _unicode_block_key(name: str) -> str:
+        return name.upper().replace(' ', '').replace('_', '').replace('-', '')
+
+    def __init__(self, version: Optional[str] = None,
+                 categories: Optional[Dict[str, UnicodeSubset]] = None) -> None:
+        if version is None:
+            version = unidata_version
+        elif version not in UNICODE_VERSIONS:
+            raise ValueError("argument is not a valid Unicode version")
+
+        self.version = version
+        version_info = tuple(int(x) for x in version.split('.'))
+        if categories is not None:
+            self._categories = categories
+        elif self.version in unicode_categories.UNICODE_VERSIONS:
+            self._categories = get_categories(version_info, unicode_categories)
+        else:
+            raise TypeError(f"can't get version {version} from module")
+
+        # Build blocks dict for version
+        superseded_blocks = []
+        blocks = unicode_blocks.UNICODE_BLOCKS_VER_2_0_0.copy()
+
+        for name in unicode_blocks.__dict__:  # noqa
+            if name.startswith('UPDATE_BLOCKS_VER_'):
+                diff_version = name[18:].replace('_', '.')
+                if version_info < tuple(int(x) for x in diff_version.split('.')):
+                    break
+                blocks.update(getattr(unicode_blocks, name))
+
+            elif name.startswith('REMOVED_BLOCKS_VER_'):
+                diff_version = name[19:].replace('_', '.')
+                if version_info < tuple(int(x) for x in diff_version.split('.')):
+                    break
+                superseded_blocks.extend(getattr(unicode_blocks, name))
+
+        # Following naming rules: https://www.w3.org/TR/xmlschema11-2/#cces-blockesc
+        self._blocks = {k.replace(' ', '').replace('_', ''): v for k, v in blocks.items()}
+
+        # Additional map for lookup using normalization for Unicode naming rules,
+        # doesn't include superseded blocks.
+        self._unicode_blocks = {
+            k.upper().replace(' ', '').replace('_', '').replace('-', ''): k
+            for k in blocks if k not in superseded_blocks
+        }
+
+    def category(self, name: str) -> UnicodeSubset:
+        return self._categories[name]
+
+    def block(self, name: str, normalize: bool = False) -> UnicodeSubset:
+        if normalize:
+            key = name.upper().replace(' ', '').replace('_', '').replace('-', '')
+            try:
+                name = self._unicode_blocks[key]
+            except KeyError:
+                if key != 'NOBLOCK':
+                    raise
+                name = key
+
+        try:
+            subset = self._blocks[name]
+        except KeyError:
+            if name != 'NoBlock':
+                raise
+
+            # Define the special block "No_Block", that contains all the other codepoints not
+            # belonging to a defined block (https://www.unicode.org/Public/UNIDATA/Blocks.txt)
+            no_block = UnicodeSubset([(0, maxunicode + 1)])
+            for v in self._blocks.values():
+                no_block -= v
+            self._blocks['NoBlock'] = no_block
+            self._unicode_blocks['NOBLOCK'] = 'NoBlock'
+            return no_block
+
+        else:
+            if not isinstance(subset, UnicodeSubset):
+                subset = self._blocks[name] = UnicodeSubset(subset)
+            return subset
+
+
+###
+# Installed Unicode Data instance and accessors
+__unicode_data = UnicodeData()
+
+# Simple cache for Unicode subsets defined using callables with no-arguments, that
+# can include subsets defined on versioned Unicode data or fixed codepoints. This
+# cache is cleared if Unicode data is reinstalled.
+__subsets_cache: Dict[Callable[[], UnicodeSubset], UnicodeSubset] = {}
+
+
+def install_unicode_data(version: Optional[str] = None,
+                         name_or_url: Optional[str] = None) -> None:
+    """
+    Install a different version of UnicodeData. For default the package installs the version
+    that matches `unicodedata.unidata_version`. Call without parameters to restore the
+    default version.
+
+    :param version: Unicode version to install. It's required if a *name_or_url* is provided.
+    :param name_or_url: Import name of an additional module or a URL to raw UnicodeData.txt.
+    """
+    global __unicode_data
+
+    if name_or_url is None:
+        __unicode_data = UnicodeData(version)
+    elif version is None:
+        raise TypeError("you must specify a version to install")
+    elif name_or_url.endswith('unicode_categories'):
+        import importlib
+        module = importlib.import_module(name_or_url)
+        version_info = tuple(int(x) for x in version.split('.'))
+        categories = get_categories(version_info, module)
+        __unicode_data = UnicodeData(version, categories)
+    else:
+        categories = get_categories_from_url(name_or_url)
+        __unicode_data = UnicodeData(version, categories)
+
+    __subsets_cache.clear()
+
+
+def unicode_version() -> str:
+    """Returns the installed UnicodeData version."""
+    return __unicode_data.version
+
+
+def lazy_subset(func: Callable[[], UnicodeSubset]) -> Callable[[], UnicodeSubset]:
+    """
+    Defines a lazy UnicodeSubset wrapping its definition in a callable with no arguments.
+    """
+    @wraps(func)
+    def wrapper() -> UnicodeSubset:
+        try:
+            return __subsets_cache[func]
+        except KeyError:
+            __subsets_cache[func] = func()
+            return __subsets_cache[func]
+
+    return wrapper
 
 
 def unicode_subset(name: str) -> UnicodeSubset:
-    if name.startswith('Is'):
+    """Retrieve a Unicode subset by name, raising a RegexError if it cannot be retrieved."""
+    if name[:2] == 'Is':
         try:
-            return UNICODE_BLOCKS[name]
+            return __unicode_data.block(name[2:])
         except KeyError:
-            raise RegexError("%r doesn't match to any Unicode block." % name)
+            raise RegexError(f"{name!r} doesn't match any Unicode block")
     else:
         try:
-            return UNICODE_CATEGORIES[name]
+            return __unicode_data.category(name)
         except KeyError:
-            raise RegexError("%r doesn't match to any Unicode category." % name)
+            raise RegexError(f"{name!r} doesn't match any Unicode category")
+
+
+def unicode_category(name: str) -> UnicodeSubset:
+    """
+    Returns the Unicode Character Category subset addressed by the provided name, raising a
+    KeyError if it's not found.
+    """
+    return __unicode_data.category(name)
+
+
+def unicode_block(name: str, normalize: bool = False) -> UnicodeSubset:
+    """
+    Returns the Unicode block subset addressed by the provided name, raising a KeyError
+    if it's not found. For default the lookup is done following the XSD naming rules for
+    blocks and keeping superseded blocks (e.g. Greek), otherwise the name is normalized
+    following the Unicode standard rules, without considering the casing, spaces, hyphens
+    and underscores and the lookup is restricted to blocks defined on installed version.
+    """
+    return __unicode_data.block(name, normalize)

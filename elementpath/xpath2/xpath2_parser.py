@@ -12,7 +12,6 @@ XPath 2.0 implementation - part 1 (parser class and symbols)
 """
 from abc import ABCMeta
 import locale
-from collections.abc import MutableSequence
 from urllib.parse import urlparse
 from typing import cast, Any, ClassVar, Dict, List, Optional, Tuple, Type, Union
 
@@ -245,7 +244,10 @@ class XPath2Parser(XPath1Parser):
                     sequence_types: Union[Tuple[()], Tuple[str, ...], List[str]] = (),
                     label: Union[str, Tuple[str, ...]] = 'constructor function') \
             -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Creates a constructor token class."""
+        """
+        Statically creates a constructor token class, that is registered in the globals
+        of the module where the method is called.
+        """
         def nud_(self: XPathConstructor) -> XPathConstructor:
             try:
                 self.parser.advance('(')
@@ -301,7 +303,7 @@ class XPath2Parser(XPath1Parser):
 
     def schema_constructor(self, atomic_type_name: str, bp: int = 90) \
             -> Type[XPathFunction]:
-        """Registers a token class for a schema atomic type constructor function."""
+        """Dynamically registers a token class for a schema atomic type constructor function."""
         if atomic_type_name in (XSD_ANY_ATOMIC_TYPE, XSD_NOTATION):
             raise xpath_error('XPST0080')
 
@@ -348,7 +350,6 @@ class XPath2Parser(XPath1Parser):
         token_class = cast(
             Type[XPathFunction], ABCMeta(token_class_name, (XPathFunction,), kwargs)
         )
-        MutableSequence.register(token_class)
 
         if self.symbol_table is self.__class__.symbol_table:
             self.symbol_table = dict(self.__class__.symbol_table)
@@ -413,24 +414,23 @@ class XPath2Parser(XPath1Parser):
                     msg = f'function {qname.qname!r} is already registered'
                     raise ElementPathValueError(msg)
 
-                # Copy the token class before register the proxy token
+                # Move the token class before register the proxy token
                 self.symbol_table[f'{{{token_cls.namespace}}}{symbol}'] = token_cls
 
-            proxy_class_name = f'{upper_camel_case(qname.local_name)}ProxyToken'
+            token_class_name = f'{upper_camel_case(qname.local_name)}FunctionProxy'
             kwargs = {
-                'class_name': proxy_class_name,
+                'class_name': token_class_name,
                 'symbol': symbol,
+                'label': 'function',
                 'lbp': bp,
                 'rbp': bp,
                 '__module__': self.__module__,
-                '__qualname__': proxy_class_name,
+                '__qualname__': token_class_name,
                 '__return__': None
             }
-            proxy_class = cast(
+            self.symbol_table[symbol] = cast(
                 Type[ProxyToken], ABCMeta(class_name, (ProxyToken,), kwargs)
             )
-            MutableSequence.register(proxy_class)
-            self.symbol_table[symbol] = proxy_class
 
         def evaluate_external_function(self_: XPathFunction,
                                        context: Optional[XPathContext] = None) -> Any:
@@ -494,8 +494,6 @@ class XPath2Parser(XPath1Parser):
         token_class = cast(
             Type[XPathFunction], ABCMeta(class_name, (XPathFunction,), kwargs)
         )
-        MutableSequence.register(token_class)
-
         self.symbol_table[lookup_name] = token_class
         self.tokenizer = None
         return token_class
@@ -557,11 +555,6 @@ XPath2Parser.unregister('starts-with')
 
 ###
 # Symbols
-XPath2Parser.register('then')
-XPath2Parser.register('else')
-XPath2Parser.register('in')
-XPath2Parser.register('return')
-XPath2Parser.register('satisfies')
 XPath2Parser.register('?')
 XPath2Parser.register('(:')
 XPath2Parser.register(':)')

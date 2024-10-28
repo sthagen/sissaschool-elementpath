@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2016-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2016-2024, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -8,10 +8,9 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 """
-This module defines Unicode code points helper functions.
+This module defines common definitions and helper functions for regex subpackage.
 """
-from sys import maxunicode
-from typing import Optional, Set, Tuple, Union
+from typing import Set, Tuple, Union
 
 from elementpath._typing import Iterable, Iterator
 
@@ -19,6 +18,14 @@ CHARACTER_CLASS_ESCAPED: Set[int] = {ord(c) for c in r'-|.^?*+{}()[]\\'}
 """Code Points of escaped chars in a character class."""
 
 CodePoint = Union[int, Tuple[int, int]]
+
+
+class RegexError(Exception):
+    """
+    Error in a regular expression or in a character class specification.
+    This exception is derived from `Exception` base class and is raised
+    only by the regex subpackage.
+    """
 
 
 def code_point_order(cp: CodePoint) -> int:
@@ -31,70 +38,55 @@ def code_point_reverse_order(cp: CodePoint) -> int:
     return cp if isinstance(cp, int) else cp[1] - 1
 
 
-def iter_code_points(code_points: Iterable[CodePoint], reverse: bool = False) \
+def iter_code_points(codepoints: Iterable[CodePoint], reverse: bool = False) \
         -> Iterator[CodePoint]:
     """
-    Iterates a code points sequence. Three ore more consecutive
-    code points are merged in a range.
+    Iterates a code points sequence. Three or more consecutive code points are merged in a range.
 
-    :param code_points: an iterable with code points and code point ranges.
+    :param codepoints: an iterable with code points and code point ranges.
     :param reverse: if `True` reverses the order of the sequence.
     :return: yields code points or code point ranges.
     """
     start_cp = end_cp = 0
     if reverse:
-        code_points = sorted(code_points, key=code_point_reverse_order, reverse=True)
+        codepoints = sorted(codepoints, key=code_point_reverse_order, reverse=True)
     else:
-        code_points = sorted(code_points, key=code_point_order)
+        codepoints = sorted(codepoints, key=code_point_order)
 
-    for cp in code_points:
+    for cp in codepoints:
         if isinstance(cp, int):
-            cp = cp, cp + 1
+            cp0 = cp
+            cp1 = cp + 1
+        else:
+            cp0, cp1 = cp
 
         if not end_cp:
-            start_cp, end_cp = cp
+            start_cp = cp0
+            end_cp = cp1
             continue
         elif reverse:
-            if start_cp <= cp[1]:
-                start_cp = min(start_cp, cp[0])
+            if start_cp <= cp1:
+                if start_cp > cp0:
+                    start_cp = cp0
                 continue
-        elif end_cp >= cp[0]:
-            end_cp = max(end_cp, cp[1])
+        elif end_cp >= cp0:
+            if end_cp < cp1:
+                end_cp = cp1
             continue
 
         if end_cp > start_cp + 1:
             yield start_cp, end_cp
         else:
             yield start_cp
-        start_cp, end_cp = cp
+
+        start_cp = cp0
+        end_cp = cp1
     else:
         if end_cp:
             if end_cp > start_cp + 1:
                 yield start_cp, end_cp
             else:
                 yield start_cp
-
-
-def get_code_point_range(cp: CodePoint) -> Optional[CodePoint]:
-    """
-    Returns a code point range.
-
-    :param cp: a single code point or a code point range.
-    :return: a code point range or `None` if the argument is not a \
-    code point or a code point range.
-    """
-    if isinstance(cp, int):
-        if 0 <= cp <= maxunicode:
-            return cp, cp + 1
-    else:
-        try:
-            if isinstance(cp[0], int) and isinstance(cp[1], int):
-                if 0 <= cp[0] < cp[1] <= maxunicode + 1:
-                    return cp
-        except (IndexError, TypeError):
-            pass
-
-    return None
 
 
 def code_point_repr(cp: CodePoint) -> str:
@@ -124,3 +116,91 @@ def code_point_repr(cp: CodePoint) -> str:
         return '%s-%s' % (start_char, end_char)
     else:
         return start_char + end_char
+
+
+def iterparse_character_subset(s: str, expand_ranges: bool = False) -> Iterator[CodePoint]:
+    """
+    Parses a regex character subset, generating a sequence of code points
+    and code points ranges. An unescaped hyphen (-) that is not at the
+    start or at the end is interpreted as range specifier.
+
+    :param s: a string representing the character subset.
+    :param expand_ranges: if set to `True` then expands character ranges.
+    :return: yields integers or couples of integers.
+    """
+    escaped = False
+    on_range = False
+    char = ''
+    length = len(s)
+    subset_index_iterator = iter(range(len(s)))
+    for k in subset_index_iterator:
+        if k == 0:
+            char = s[0]
+            if char == '\\':
+                escaped = True
+            elif char in r'[]' and length > 1:
+                raise RegexError("bad character %r at position 0" % char)
+            elif expand_ranges:
+                yield ord(char)
+            elif length <= 2 or s[1] != '-':
+                yield ord(char)
+        elif s[k] == '-':
+            if escaped or (k == length - 1):
+                char = s[k]
+                yield ord(char)
+                escaped = False
+            elif on_range:
+                char = s[k]
+                yield ord(char)
+                on_range = False
+            else:
+                # Parse character range
+                on_range = True
+                k = next(subset_index_iterator)
+                end_char = s[k]
+                if end_char == '\\' and (k < length - 1):
+                    if s[k + 1] in r'-|.^?*+{}()[]':
+                        k = next(subset_index_iterator)
+                        end_char = s[k]
+                    elif s[k + 1] in r'sSdDiIcCwWpP':
+                        msg = "bad character range '%s-\\%s' at position %d: %r"
+                        raise RegexError(msg % (char, s[k + 1], k - 2, s))
+
+                if ord(char) > ord(end_char):
+                    msg = "bad character range '%s-%s' at position %d: %r"
+                    raise RegexError(msg % (char, end_char, k - 2, s))
+                elif expand_ranges:
+                    yield from range(ord(char) + 1, ord(end_char) + 1)
+                else:
+                    yield ord(char), ord(end_char) + 1
+
+        elif s[k] in r'|.^?*+{}()':
+            if escaped:
+                escaped = False
+            on_range = False
+            char = s[k]
+            yield ord(char)
+        elif s[k] in r'[]':
+            if not escaped and length > 1:
+                raise RegexError("bad character %r at position %d" % (s[k], k))
+            escaped = on_range = False
+            char = s[k]
+            if k >= length - 2 or s[k + 1] != '-':
+                yield ord(char)
+        elif s[k] == '\\':
+            if escaped:
+                escaped = on_range = False
+                char = '\\'
+                yield ord(char)
+            else:
+                escaped = True
+        else:
+            if escaped:
+                escaped = False
+                yield ord('\\')
+            on_range = False
+            char = s[k]
+            if k >= length - 2 or s[k + 1] != '-':
+                yield ord(char)
+    if escaped:
+        yield ord('\\')
