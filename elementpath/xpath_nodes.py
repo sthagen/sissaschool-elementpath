@@ -7,14 +7,15 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
+import importlib
 from collections import deque
-from importlib import import_module
 from urllib.parse import urljoin
-from types import ModuleType
 from typing import cast, Any, Dict, List, Optional, Tuple, Union
+from xml.etree import ElementTree
 
 from elementpath._typing import Deque, Iterator, MutableMapping
 from elementpath.aliases import SequenceType
+from elementpath.exceptions import ElementPathRuntimeError
 from elementpath.datatypes import UntypedAtomic, AtomicType
 from elementpath.namespaces import XML_NAMESPACE, XML_BASE, XSI_NIL, \
     XSD_ANY_TYPE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE, \
@@ -23,9 +24,9 @@ from elementpath.protocols import ElementProtocol, DocumentProtocol, XsdElementP
     XsdAttributeProtocol, XsdTypeProtocol, XsdSchemaProtocol
 from elementpath.helpers import match_wildcard, is_absolute_uri
 from elementpath.decoder import get_atomic_value
-from elementpath.etree import etree_iter_strings, is_etree_element, is_etree_document
+from elementpath.etree import etree_iter_strings, is_etree_element_instance
 
-__all__ = ['is_xpath_node', 'SchemaElemType', 'TypedNodeType', 'ParentNodeType',
+__all__ = ['SchemaElemType', 'TypedNodeType', 'ParentNodeType',
            'ChildNodeType', 'ElementMapType', 'XPathNode', 'AttributeNode',
            'NamespaceNode', 'TextNode', 'CommentNode', 'ProcessingInstructionNode',
            'ElementNode', 'LazyElementNode', 'SchemaElementNode', 'DocumentNode']
@@ -107,7 +108,7 @@ class XPathNode:
     position: int  # for document total order
 
     @property
-    def root_node(self, namespace: Optional[str] = None) -> 'XPathNode':
+    def root_node(self) -> 'XPathNode':
         return self if self.parent is None else self.parent.root_node
 
     @property
@@ -639,6 +640,59 @@ class ElementNode(XPathNode):
         else:
             return None
 
+    def get_document_node(self, replace: bool = True, as_parent: bool = True) -> 'DocumentNode':
+        """
+        Returns a `DocumentNode` for the element node. If the element belongs to a tree that
+        already has a document root, returns the document, otherwise creates a dummy document
+        if the element node wraps an Element of an ElementTree structure or return `None`.
+
+        :param replace: if `True` the root element of the tree is replaced by the \
+        document node. This is usually useful for extended data models (more element \
+        children, text nodes).
+        :param as_parent: if `True` the root node/s of parent attribute is set with \
+        the dummy document node, otherwise is set to `None`.
+        """
+        root_node: ParentNodeType = self
+        while root_node.parent is not None:
+            root_node = root_node.parent
+
+        if isinstance(root_node, DocumentNode):
+            return root_node
+
+        if root_node.elem.__class__.__module__ not in ('lxml.etree', 'lxml.html'):
+            etree = ElementTree
+        else:
+            etree = importlib.import_module('lxml.etree')
+
+        if replace:
+            document = etree.ElementTree()
+            if sum(isinstance(x, ElementNode) for x in root_node.children) == 1:
+                for child in root_node.children:
+                    if isinstance(child, ElementNode):
+                        document = etree.ElementTree(cast(ElementTree.Element, child.elem))
+                        break
+
+            document_node = DocumentNode(document, root_node.uri, root_node.position)
+            for child in root_node.children:
+                document_node.children.append(child)
+                child.parent = document_node if as_parent else None
+
+            if root_node.elements is not None:
+                root_node.elements.pop(root_node, None)  # type: ignore[call-overload]
+                document_node.elements = root_node.elements
+            del root_node
+
+        else:
+            document = etree.ElementTree(cast(ElementTree.Element, root_node.elem))
+            document_node = DocumentNode(document, root_node.uri, root_node.position - 1)
+            document_node.children.append(root_node)
+            if as_parent:
+                root_node.parent = document_node
+            if root_node.elements is not None:
+                document_node.elements = root_node.elements
+
+        return document_node
+
     def iter(self) -> Iterator[XPathNode]:
         """Iterates the tree building lazy components."""
         yield self
@@ -751,7 +805,7 @@ class DocumentNode(XPathNode):
         for child in self.children:
             if isinstance(child, ElementNode):
                 return child
-        raise RuntimeError("Missing document root")
+        raise ElementPathRuntimeError("Missing document root")
 
     def get_element_node(self, elem: ElementProtocol) -> Optional[ElementNode]:
         return self.elements.get(elem)
@@ -823,14 +877,14 @@ class DocumentNode(XPathNode):
 
     def is_extended(self) -> bool:
         """
-        Returns `True` if the document node cannot be represented with an
+        Returns `True` if the document node can't be represented with an
         ElementTree structure, `False` otherwise.
         """
         root = self.document.getroot()
-        if root is None or not is_etree_element(root):
+        if root is None or not is_etree_element_instance(root):
             return True
         elif not self.children:
-            raise RuntimeError("Missing document root")
+            raise ElementPathRuntimeError("Missing document root")
         elif len(self.children) == 1:
             return not isinstance(self.children[0], ElementNode)
         elif not hasattr(root, 'itersiblings'):
@@ -839,49 +893,6 @@ class DocumentNode(XPathNode):
             return True
         else:
             return sum(isinstance(x, ElementNode) for x in root) != 1
-
-    @classmethod
-    def from_element_node(cls, root_node: ElementNode, replace: bool = True) -> 'DocumentNode':
-        """
-        Build a `DocumentNode` from a tree based on an ElementNode.
-
-        :param root_node: the root element node.
-        :param replace: if `True` the root element is replaced by a document node. \
-        This is usually useful for extended data models (more element children, text nodes).
-        """
-        etree_module_name = root_node.elem.__class__.__module__
-        etree: ModuleType = import_module(etree_module_name)
-
-        assert root_node.elements is not None, "Not a root element node"
-        assert all(not isinstance(x, SchemaElementNode) for x in root_node.elements)
-        elements = cast(Dict[ElementProtocol, ElementNode], root_node.elements)
-
-        if replace:
-            document = etree.ElementTree()
-            if sum(isinstance(x, ElementNode) for x in root_node.children) == 1:
-                for child in root_node.children:
-                    if isinstance(child, ElementNode):
-                        document = etree.ElementTree(child.elem)
-                        break
-
-            document_node = cls(document, root_node.uri, root_node.position)
-            for child in root_node.children:
-                document_node.children.append(child)
-                child.parent = document_node
-
-            elements.pop(root_node, None)  # type: ignore[call-overload]
-            document_node.elements = elements
-            del root_node
-            return document_node
-
-        else:
-            document = etree.ElementTree(root_node.elem)
-            document_node = cls(document, root_node.uri, root_node.position - 1)
-            document_node.children.append(root_node)
-            root_node.parent = document_node
-            document_node.elements = elements
-
-        return document_node
 
 
 ###
@@ -1038,10 +1049,6 @@ class SchemaElementNode(ElementNode):
                     children = iterators.pop()
                 except IndexError:
                     return
-
-
-def is_xpath_node(obj: Any) -> bool:
-    return isinstance(obj, XPathNode) or is_etree_element(obj) or is_etree_document(obj)
 
 
 XPathNodeType = Union[DocumentNode, NamespaceNode, AttributeNode, TextNode,

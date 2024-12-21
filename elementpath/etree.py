@@ -106,7 +106,17 @@ def is_etree_element(obj: Any) -> bool:
 
 
 def is_lxml_etree_element(obj: Any) -> bool:
-    return is_etree_element(obj) and hasattr(obj, 'getparent') and hasattr(obj, 'nsmap')
+    return is_etree_element(obj) and \
+        hasattr(obj, 'getparent') and \
+        hasattr(obj, 'nsmap') and \
+        obj.__class__.__module__ in ('lxml.etree', 'lxml.html')
+
+
+def is_etree_element_instance(obj: Any) -> bool:
+    """Strictly checks that the objects is an ElementTree or lxml.etree Element."""
+    return isinstance(obj, ElementTree.Element) or \
+        isinstance(obj, PyElementTree.Element) or \
+        is_lxml_etree_element(obj)
 
 
 def is_etree_document(obj: Any) -> bool:
@@ -114,7 +124,17 @@ def is_etree_document(obj: Any) -> bool:
 
 
 def is_lxml_etree_document(obj: Any) -> bool:
-    return is_etree_document(obj) and hasattr(obj, 'xpath') and hasattr(obj, 'xslt')
+    return is_etree_document(obj) and \
+        hasattr(obj, 'xpath') and \
+        hasattr(obj, 'xslt') and \
+        obj.__class__.__module__ in ('lxml.etree', 'lxml.html')
+
+
+def is_etree_document_instance(obj: Any) -> bool:
+    """Strictly checks that the objects is an ElementTree or lxml.etree document."""
+    return isinstance(obj, ElementTree.ElementTree) or \
+        isinstance(obj, PyElementTree.ElementTree) or \
+        is_lxml_etree_document(obj)
 
 
 def etree_iter_strings(elem: Union[DocumentProtocol, ElementProtocol],
@@ -237,7 +257,7 @@ def etree_tostring(elem: ElementProtocol,
             return indent + line
 
     etree_module: Any
-    if not is_etree_element(elem):
+    if not is_etree_element_instance(elem):
         raise TypeError(f"{elem!r} is not an Element")
     elif isinstance(elem, PyElementTree.Element):
         etree_module = PyElementTree
@@ -308,6 +328,6 @@ def etree_tostring(elem: ElementProtocol,
 
 
 __all__ = ['ElementTree', 'PyElementTree', 'SafeXMLParser', 'defuse_xml',
-           'is_etree_element', 'is_lxml_etree_element', 'is_etree_document',
-           'is_lxml_etree_document', 'etree_iter_strings', 'etree_deep_equal',
-           'etree_iter_paths', 'etree_tostring']
+           'is_etree_element', 'is_lxml_etree_element', 'is_etree_element_instance',
+           'is_etree_document', 'is_lxml_etree_document', 'is_etree_document_instance',
+           'etree_iter_strings', 'etree_deep_equal', 'etree_iter_paths', 'etree_tostring']

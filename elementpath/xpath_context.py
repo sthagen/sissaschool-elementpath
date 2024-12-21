@@ -19,9 +19,9 @@ from elementpath.protocols import ElementProtocol, DocumentProtocol
 from elementpath.exceptions import ElementPathTypeError
 from elementpath.tdop import Token
 from elementpath.datatypes import AnyAtomicType, AtomicType, Timezone, Language
-from elementpath.etree import is_etree_element, is_etree_document
+from elementpath.etree import is_etree_element, is_etree_element_instance, is_etree_document
 from elementpath.xpath_nodes import ChildNodeType, XPathNode, AttributeNode, NamespaceNode, \
-    CommentNode, ProcessingInstructionNode, ElementNode, DocumentNode, SchemaElementNode
+    CommentNode, ProcessingInstructionNode, ElementNode, DocumentNode
 from elementpath.tree_builders import RootArgType, get_node_tree
 
 if TYPE_CHECKING:
@@ -60,10 +60,11 @@ class XPathContext:
     This can be useful when the dynamic context has additional namespaces and root \
     is an Element or an ElementTree instance of the standard library.
     :param uri: an optional URI associated with the root element or the document.
-    :param fragment: if `True` a root element is considered a fragment, if `False` \
-    a root element is considered the root of an XML document, and a dummy document \
-    is created for selection. In this case the dummy document value is not included \
-    in the results. If `None` is provided, the root node kind is preserved.
+    :param fragment: if `True` is provided the root is considered a fragment. In this \
+    case if `root` is an ElementTree instance skips it and use the root Element. If \
+    `False` is provided creates a dummy document when the root is an Element instance. \
+    In this case the dummy document value is not included in results. For default the \
+    root node kind is preserved.
     :param item: the context item. A `None` value means that the context is positioned on \
     the document node.
     :param position: the current position of the node within the input sequence.
@@ -104,7 +105,7 @@ class XPathContext:
                  root: Optional[RootArgType] = None,
                  namespaces: Optional[NamespacesType] = None,
                  uri: Optional[str] = None,
-                 fragment: Optional[bool] = False,
+                 fragment: Optional[bool] = None,
                  item: Optional[ItemArgType] = None,
                  position: int = 1,
                  size: int = 1,
@@ -142,15 +143,11 @@ class XPathContext:
 
         if isinstance(self.root, DocumentNode):
             self.document = self.root
-        elif fragment or isinstance(self.root, SchemaElementNode):
-            pass
-        elif isinstance(self.root, ElementNode):
-            # Creates a dummy document
-            document = cast(DocumentProtocol, self.etree.ElementTree(self.root.elem))
-            self.document = DocumentNode(document, self.root.uri, position=0)
-            self.document.children.append(self.root)
-            self.document.elements = cast(Dict[ElementProtocol, ElementNode], self.root.elements)
-            # self.root.parent = self.document  TODO for v5? It's necessary?
+        elif fragment is None and \
+                isinstance(self.root, ElementNode) and \
+                is_etree_element_instance(self.root.elem):
+            # Creates a dummy document that will be not included in results
+            self.document = self.root.get_document_node(replace=False, as_parent=False)
 
         self.position = position
         self.size = size
@@ -214,12 +211,10 @@ class XPathContext:
             else:
                 module_name = 'xml.etree.ElementTree'
 
-            if not isinstance(module_name, str) or not module_name.startswith('lxml.'):
-                etree_module_name = 'xml.etree.ElementTree'
+            if module_name in ('lxml.etree', 'lxml.html'):
+                self._etree: ModuleType = importlib.import_module('lxml.etree')
             else:
-                etree_module_name = 'lxml.etree'
-
-            self._etree: ModuleType = importlib.import_module(etree_module_name)
+                self._etree = importlib.import_module('xml.etree.ElementTree')
 
         return self._etree
 
@@ -255,7 +250,7 @@ class XPathContext:
     def get_context_item(self, item: ItemArgType,
                          namespaces: Optional[NamespacesType] = None,
                          uri: Optional[str] = None,
-                         fragment: Optional[bool] = False) -> ItemType:
+                         fragment: Optional[bool] = None) -> ItemType:
         """
         Checks the item and returns an item suitable for XPath processing.
         For XML trees and elements try a match with an existing node in the
