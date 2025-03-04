@@ -37,7 +37,7 @@ from elementpath.datatypes import AnyAtomicType, DateTime, DateTime10, Date, Dat
     xsd10_atomic_types, xsd11_atomic_types
 from elementpath.datatypes.atomic_types import AtomicTypeMeta
 from elementpath.datatypes.datetime import OrderedDateTime
-from elementpath.decoder import get_atomic_value
+from elementpath.decoder import get_atomic_sequence
 
 
 class AtomicTypesTest(unittest.TestCase):
@@ -76,30 +76,33 @@ class AtomicTypesTest(unittest.TestCase):
               </xs:simpleType>
             </xs:schema>"""))
 
-        self.assertEqual(get_atomic_value(schema.elements['d'].type), UntypedAtomic('1'))
+        self.assertEqual(
+            list(get_atomic_sequence(schema.elements['d'].type)), [UntypedAtomic('1')]
+        )
 
         with self.assertRaises(AttributeError):
-            get_atomic_value(schema)
+            list(get_atomic_sequence(schema))
 
-        self.assertEqual(get_atomic_value(xsd_type=None), UntypedAtomic(value=''))
+        self.assertEqual(next(iter(get_atomic_sequence(xsd_type=None))),
+                         UntypedAtomic(value=''))
 
-        value = get_atomic_value(schema.elements['a'].type)
+        value = next(iter(get_atomic_sequence(schema.elements['a'].type)), None)
         self.assertIsInstance(value, UntypedAtomic)
         self.assertEqual(value, UntypedAtomic(value='1'))
 
-        value = get_atomic_value(schema.elements['b'].type)
+        value = next(iter(get_atomic_sequence(schema.elements['b'].type)), None)
         self.assertIsInstance(value, int)
         self.assertEqual(value, 1)
 
-        value = get_atomic_value(schema.elements['c'].type)
+        value = next(iter(get_atomic_sequence(schema.elements['c'].type)), None)
         self.assertIsInstance(value, UntypedAtomic)
         self.assertEqual(value, UntypedAtomic(value='1'))
 
-        value = get_atomic_value(schema.elements['d'].type)
+        value = next(iter(get_atomic_sequence(schema.elements['d'].type)), None)
         self.assertIsInstance(value, float)
         self.assertEqual(value, 1.0)
 
-        value = get_atomic_value(schema.elements['e'].type)
+        value = next(iter(get_atomic_sequence(schema.elements['e'].type)), None)
         self.assertIsInstance(value, str)
         self.assertEqual(value, '  alpha\t')
 
@@ -559,6 +562,16 @@ class DateTimeTypesTest(unittest.TestCase):
         dt = DateTime.fromstring('9999-12-31T23:59:59.9999999')
         self.assertIsInstance(dt, DateTime)
         self.assertEqual(dt._dt, datetime.datetime(9999, 12, 31, 23, 59, 59, 999999))
+
+    def test_issue_84_error_parsing_midnight_hours(self):
+        dt1 = DateTime.fromstring('9998-12-31T24:00:00')
+        self.assertEqual(str(dt1), '9999-01-01T00:00:00')
+
+        dt1 = DateTime.fromstring('9999-12-31T24:00:00')
+        self.assertEqual(str(dt1), '10000-01-01T00:00:00')
+
+        dt2 = DateTime.fromstring('10000-01-01T00:00:00')
+        self.assertEqual(dt1, dt2)
 
     def test_date_fromstring(self):
         self.assertIsInstance(Date.fromstring('2000-10-07'), Date)
@@ -1313,6 +1326,19 @@ class DurationTypesTest(unittest.TestCase):
         self.assertTrue(issubclass(Duration, AnyAtomicType))
         self.assertTrue(issubclass(YearMonthDuration, AnyAtomicType))
         self.assertTrue(issubclass(DayTimeDuration, AnyAtomicType))
+
+    def test_max_min_months(self):
+        delta1 = YearMonthDuration(months=-119999)
+        self.assertEqual(delta1.months, -119999)
+        delta2 = YearMonthDuration(months=119999)
+        self.assertEqual(delta2.months, 119999)
+        self.assertEqual(delta2 + delta1, YearMonthDuration(0))
+
+        delta1 = YearMonthDuration(months=-150000)
+        self.assertEqual(delta1.months, -150000)
+        delta2 = YearMonthDuration(months=150000)
+        self.assertEqual(delta2.months, 150000)
+        self.assertEqual(delta2 + delta1, YearMonthDuration(0))
 
 
 class TimezoneTypeTest(unittest.TestCase):

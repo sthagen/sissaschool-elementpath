@@ -36,6 +36,8 @@ class DummyXsdType:
 
     @property
     def root_type(self): return self
+    @property
+    def simple_type(self): return self
     def is_matching(self, name, default_namespace): pass
     def is_empty(self): pass
     def is_simple(self): pass
@@ -137,9 +139,6 @@ class XPathTestCase(unittest.TestCase):
         :param context: an optional `XPathContext` instance to be passed to evaluate method.
         """
         context = copy(context)
-        if expected is None:
-            expected = []
-
         try:
             root_token = self.parser.parse(path)
         except ElementPathError as err:
@@ -147,7 +146,9 @@ class XPathTestCase(unittest.TestCase):
                 return
             raise
 
-        if isinstance(expected, type):
+        if expected is None:
+            self.assertEqual(root_token.evaluate(context), [])
+        elif isinstance(expected, type):
             if issubclass(expected, Exception):
                 self.assertRaises(expected, root_token.evaluate, context)
             else:

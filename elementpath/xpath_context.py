@@ -10,6 +10,7 @@
 import datetime
 import importlib
 from copy import copy
+from functools import cached_property
 from types import ModuleType
 from typing import TYPE_CHECKING, cast, Any, Dict, List, Optional, Set, Union
 
@@ -21,11 +22,13 @@ from elementpath.tdop import Token
 from elementpath.datatypes import AnyAtomicType, AtomicType, Timezone, Language
 from elementpath.etree import is_etree_element, is_etree_element_instance, is_etree_document
 from elementpath.xpath_nodes import ChildNodeType, XPathNode, AttributeNode, NamespaceNode, \
-    CommentNode, ProcessingInstructionNode, ElementNode, DocumentNode
-from elementpath.tree_builders import RootArgType, get_node_tree
+    CommentNode, ProcessingInstructionNode, ElementNode, DocumentNode, RootNodeType, \
+    RootArgType, SchemaElementNode
+from elementpath.tree_builders import get_node_tree
 
 if TYPE_CHECKING:
-    from .xpath_tokens import XPathToken, XPathAxis, XPathFunction  # noqa: F401
+    from elementpath.schema_proxy import AbstractSchemaProxy
+    from elementpath.xpath_tokens import XPathToken, XPathAxis, XPathFunction  # noqa
 
 __all__ = ['XPathContext', 'XPathSchemaContext', 'ContextType', 'ItemType',
            'ValueType', 'ItemArgType', 'FunctionArgType']
@@ -70,6 +73,7 @@ class XPathContext:
     :param position: the current position of the node within the input sequence.
     :param size: the number of items in the input sequence.
     :param axis: the active axis. Used to choose when apply the default axis ('child' axis).
+    :param schema: an optional schema proxy instance to be applied on XDM root or item.
     :param variables: dictionary of context variables that maps a QName to a value.
     :param current_dt: current dateTime of the implementation, including explicit timezone.
     :param timezone: implicit timezone to be used when a date, time, or dateTime value does \
@@ -91,15 +95,18 @@ class XPathContext:
     and fn:available-environment-variables.
     """
     _etree: Optional[ModuleType] = None
-    root: Union[DocumentNode, ElementNode, None] = None
-    document: Optional[DocumentNode] = None
+    _schema: Optional['AbstractSchemaProxy'] = None
+    root: Optional[RootNodeType]
+    document: Optional[DocumentNode]
     item: ItemType
-    total_nodes: int = 0  # Number of nodes associated to the context
 
     variables: Dict[str, ValueType]
     documents: Optional[Dict[str, DocumentNode]] = None
-    collections = None
-    default_collection = None
+    collections: Optional[Dict[str, List[XPathNode]]] = None
+    default_collection: Optional[List[XPathNode]] = None
+
+    __slots__ = ('document', 'root', 'item', 'namespaces', 'size',
+                 'position', 'variables', 'axis', '__dict__')
 
     def __init__(self,
                  root: Optional[RootArgType] = None,
@@ -110,6 +117,7 @@ class XPathContext:
                  position: int = 1,
                  size: int = 1,
                  axis: Optional[str] = None,
+                 schema: Optional['AbstractSchemaProxy'] = None,
                  variables: Optional[Dict[str, InputType[ItemArgType]]] = None,
                  current_dt: Optional[datetime.datetime] = None,
                  timezone: Optional[Union[str, Timezone]] = None,
@@ -136,7 +144,11 @@ class XPathContext:
             else:
                 self.item = self.root
 
+            if schema is not None and not self.root.is_schema_node:
+                self.root.apply_schema(schema)
+
         elif item is not None:
+            self.root = None
             self.item = self.get_context_item(item, self.namespaces, uri, fragment)
         else:
             raise ElementPathTypeError("Missing both the root node and the context item!")
@@ -145,9 +157,11 @@ class XPathContext:
             self.document = self.root
         elif fragment is None and \
                 isinstance(self.root, ElementNode) and \
-                is_etree_element_instance(self.root.elem):
+                is_etree_element_instance(self.root.obj):
             # Creates a dummy document that will be not included in results
             self.document = self.root.get_document_node(replace=False, as_parent=False)
+        else:
+            self.document = None
 
         self.position = position
         self.size = size
@@ -166,6 +180,7 @@ class XPathContext:
                 if v is not None else v for k, v in documents.items()
             }
 
+        self.schema = schema
         self.variables = {}
         if variables is not None:
             for varname, value in variables.items():
@@ -187,38 +202,54 @@ class XPathContext:
 
     def __repr__(self) -> str:
         if self.root is not None:
-            return f'{self.__class__.__name__}(root={self.root.value})'
+            return f'{self.__class__.__name__}(root={self.root.obj})'
         elif isinstance(self.item, XPathNode):
-            return f'{self.__class__.__name__}(item={self.item.value})'
+            return f'{self.__class__.__name__}(item={self.item.obj})'
         else:
             return f'{self.__class__.__name__}(item={self.item!r})'
 
     def __copy__(self) -> 'XPathContext':
         obj: XPathContext = object.__new__(self.__class__)
         obj.__dict__.update(self.__dict__)
+        obj.document = self.document
+        obj.root = self.root
+        obj.item = self.item
+        obj.size = self.size
+        obj.position = self.position
         obj.axis = None
+        obj.namespaces = {k: v for k, v in self.namespaces.items()}
         obj.variables = {k: v for k, v in self.variables.items()}
         return obj
 
-    @property
+    @cached_property
     def etree(self) -> ModuleType:
-        if self._etree is None:
-            if isinstance(self.root, (DocumentNode, ElementNode)):
-                module_name = self.root.value.__class__.__module__
-            elif isinstance(self.item, (DocumentNode, ElementNode, CommentNode,
-                                        ProcessingInstructionNode)):
-                module_name = self.item.value.__class__.__module__
-            else:
-                module_name = 'xml.etree.ElementTree'
+        if isinstance(self.root, (DocumentNode, ElementNode)):
+            module_name = self.root.obj.__class__.__module__
+        elif isinstance(self.item, (DocumentNode, ElementNode, CommentNode,
+                                    ProcessingInstructionNode)):
+            module_name = self.item.obj.__class__.__module__
+        else:
+            module_name = 'xml.etree.ElementTree'
 
-            if module_name in ('lxml.etree', 'lxml.html'):
-                self._etree: ModuleType = importlib.import_module('lxml.etree')
-            else:
-                self._etree = importlib.import_module('xml.etree.ElementTree')
+        if module_name in ('lxml.etree', 'lxml.html'):
+            return importlib.import_module('lxml.etree')
+        else:
+            return importlib.import_module('xml.etree.ElementTree')
 
-        return self._etree
+    @property
+    def schema(self) -> Optional['AbstractSchemaProxy']:
+        return self._schema
 
-    def get_root(self, node: Any) -> Union[None, ElementNode, DocumentNode]:
+    @schema.setter
+    def schema(self, schema: Optional['AbstractSchemaProxy']) -> None:
+        self._schema = schema
+        if schema is not None:
+            if self.root is not None:
+                self.root.apply_schema(schema)
+            elif isinstance(self.item, (DocumentNode, ElementNode, AttributeNode)):
+                self.item.apply_schema(schema)
+
+    def get_root(self, node: Any) -> Optional[RootNodeType]:
         if isinstance(self.root, (DocumentNode, ElementNode)):
             if any(node is x for x in self.root.iter_lazy()):
                 return self.root
@@ -260,12 +291,12 @@ class XPathContext:
         if isinstance(item, (XPathNode, AnyAtomicType)):
             return item
         elif is_etree_document(item):
-            if self.root is not None and item is self.root.value:
+            if self.root is not None and item is self.root.obj:
                 return self.root
 
             if self.documents:
                 for doc in self.documents.values():
-                    if doc is not None and item is doc.value:
+                    if doc is not None and item is doc.obj:
                         return doc
 
         elif is_etree_element(item):
@@ -313,11 +344,23 @@ class XPathContext:
             item = self.get_context_item(items)
             return [item] if isinstance(item, XPathNode) else []
 
-    def inner_focus_select(self, token: Union['XPathToken', 'XPathAxis']) \
+    def inner_focus_select(self, token: Union['XPathToken', 'XPathAxis'], predicate: bool = False) \
             -> Iterator[ItemType]:
         """Apply the token's selector with an inner focus."""
         status = self.item, self.size, self.position, self.axis
-        results = [x for x in token.select(copy(self))]
+        if predicate:
+            results: List[ItemType] = []
+            for item in token.select(copy(self)):
+                # With predicate select nodes that have not single list value
+                # must be replaced by typed values.
+                if isinstance(item, (AttributeNode, ElementNode)) and item.is_list:
+                    results.extend(v for v in item.iter_typed_values)
+                    continue
+
+                results.append(item)
+        else:
+            results = [x for x in token.select(copy(self))]
+
         self.axis = None
 
         if token.label == 'axis' and cast('XPathAxis', token).reverse_axis:
@@ -440,7 +483,7 @@ class XPathContext:
 
             self.item, self.axis = _status
 
-    def iter_parent(self) -> Iterator[Union[ElementNode, DocumentNode]]:
+    def iter_parent(self) -> Iterator[RootNodeType]:
         """Iterator for 'parent' reverse axis and '..' shortcut."""
         if isinstance(self.item, XPathNode):
 
@@ -535,7 +578,7 @@ class XPathContext:
 
     def iter_preceding(self) -> Iterator[Union[DocumentNode, ChildNodeType]]:
         """Iterator for 'preceding' reverse axis."""
-        ancestors: Set[Union[ElementNode, DocumentNode]]
+        ancestors: Set[RootNodeType]
         item: XPathNode
 
         if isinstance(self.item, XPathNode):
@@ -590,3 +633,61 @@ class XPathSchemaContext(XPathContext):
     XML instances.
     """
     root: ElementNode
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if self.schema is None:
+            if isinstance(self.root, SchemaElementNode):
+                try:
+                    self._schema = self.root.obj.xpath_proxy
+                except AttributeError:
+                    pass
+
+    @property
+    def schema(self) -> Optional['AbstractSchemaProxy']:
+        return self._schema
+
+    @schema.setter
+    def schema(self, schema: Optional['AbstractSchemaProxy']) -> None:
+        self._schema = schema
+
+    def iter_matching_nodes(self, name: str, default_namespace: Optional[str] = None) \
+            -> Iterator[Union[AttributeNode, ElementNode]]:
+        """
+        Iterator for matching elements or attributes. For default uses 'child'
+        forward axis if no axis is active, otherwise tests the current item.
+        """
+        if self.axis is not None:
+            if isinstance(self.item, (AttributeNode, ElementNode)):
+                if self.item.match_name(name, default_namespace):
+                    if not self.item.name:
+                        if isinstance(self.item, ElementNode):
+                            for element_node in self.root:
+                                assert isinstance(element_node, ElementNode)
+                                if element_node.match_name(name, default_namespace):
+                                    self.item = element_node
+                                    break
+                        else:
+                            for attribute_node in self.root.attributes:
+                                if attribute_node.match_name(name, default_namespace):
+                                    self.item = attribute_node
+                                    break
+
+                    yield self.item
+
+        elif isinstance(self.item, ElementNode):
+            _status = self.item, self.axis
+            self.axis = 'child'
+
+            for self.item in self.item:
+                if self.item.match_name(name, default_namespace):
+                    if not self.item.name:
+                        for element_node in self.root:
+                            if element_node.match_name(name, default_namespace):
+                                self.item = element_node
+                                break
+
+                    assert isinstance(self.item, ElementNode)
+                    yield self.item
+
+            self.item, self.axis = _status

@@ -20,11 +20,13 @@ from elementpath.xpath_tokens import XPathAxis
 
 from ._xpath1_functions import XPath1Parser
 
+
+register = XPath1Parser.register
 method = XPath1Parser.method
 axis = XPath1Parser.axis
 
 
-@method('@', bp=80)
+@method(register('@', lbp=80, rbp=80, label="attribute reference"))
 def nud_attribute_reference(self: XPathAxis) -> XPathAxis:
     self.parser.expected_next(
         '*', '(name)', ':', '{', 'Q{', message="invalid attribute specification")
@@ -38,9 +40,9 @@ def select_attribute_reference_or_axis(self: XPathAxis, context: ContextType = N
         -> Iterator[AttributeNode]:
     if context is None:
         raise self.missing_context()
-    else:
-        for _ in context.iter_attributes():
-            yield from cast(Iterator[AttributeNode], self[0].select(context))
+
+    for _ in context.iter_attributes():
+        yield from cast(Iterator[AttributeNode], self[0].select(context))
 
 
 @method(axis('namespace'))

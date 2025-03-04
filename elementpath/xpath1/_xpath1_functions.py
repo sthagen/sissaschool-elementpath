@@ -19,9 +19,9 @@ from elementpath.aliases import Emptiable
 from elementpath.helpers import get_double
 from elementpath.datatypes import Duration, DayTimeDuration, YearMonthDuration, \
     StringProxy, AnyURI, Float10, AnyAtomicType, AtomicType, NumericType
-from elementpath.namespaces import XML_ID, XML_LANG, get_prefixed_name
+from elementpath.namespaces import XML_ID, XML_LANG
 from elementpath.xpath_nodes import XPathNode, ElementNode, TextNode, CommentNode, \
-    ProcessingInstructionNode, DocumentNode, SchemaElementNode
+    ProcessingInstructionNode, DocumentNode, EtreeElementNode
 from elementpath.xpath_context import ContextType, XPathSchemaContext
 from elementpath.xpath_tokens import XPathFunction
 
@@ -146,7 +146,7 @@ def select_id_function(self: XPathFunction, context: ContextType = None) \
 
     if isinstance(item, (ElementNode, DocumentNode)):
         for element in item.iter_descendants():
-            if isinstance(element, ElementNode) and element.elem.get(XML_ID) == value:
+            if isinstance(element, EtreeElementNode) and element.obj.get(XML_ID) == value:
                 yield element
 
 
@@ -172,7 +172,10 @@ def evaluate_name_related_functions(self: XPathFunction, context: ContextType = 
 
     symbol = self.symbol
     if symbol == 'name':
-        return get_prefixed_name(name, arg.nsmap)
+        node_name = arg.node_name
+        if node_name is None:
+            return ''
+        return node_name.qname
     elif symbol == 'local-name':
         return name if not name or name[0] != '{' else name.split('}')[1]
     elif self.parser.version == '1.0':
@@ -373,16 +376,15 @@ def evaluate_lang_function(self: XPathFunction, context: ContextType = None) -> 
     elif context is None:
         raise self.missing_context()
 
-    if not isinstance(context.item, ElementNode) \
-            or isinstance(context.item, SchemaElementNode):
+    if not isinstance(context.item, EtreeElementNode):
         return False
     else:
         try:
-            attr = context.item.elem.attrib[XML_LANG]
+            attr = context.item.obj.attrib[XML_LANG]
         except KeyError:
             for e in context.iter_ancestors():
-                if isinstance(e, ElementNode) and XML_LANG in e.elem.attrib:
-                    lang = e.elem.attrib[XML_LANG]
+                if isinstance(e, EtreeElementNode) and XML_LANG in e.obj.attrib:
+                    lang = e.obj.attrib[XML_LANG]
                     if not isinstance(lang, str):
                         return False
                     break
@@ -422,7 +424,7 @@ def evaluate_sum_function(self: XPathFunction, context: ContextType = None) \
     try:
         values = [get_double(self.string_value(x), xsd_version)
                   if isinstance(x, XPathNode) else x
-                  for x in self[0].iter_flatten(context)]
+                  for x in self[0].select_flatten(context)]
     except (TypeError, ValueError):
         if self.parser.version == '1.0':
             return math.nan

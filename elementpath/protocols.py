@@ -11,10 +11,14 @@
 Define type hints protocols for XPath related objects.
 """
 from typing import overload, Any, Dict, Iterator, Iterable, Optional, Sequence, ItemsView, \
-    Protocol, Sized, Hashable, Union, TypeVar, Mapping, Tuple, Set
+    Protocol, Sized, Hashable, Union, TypeVar, Mapping, Tuple, TYPE_CHECKING, Set
+from xml.etree.ElementTree import Element, ElementTree
 
 from elementpath._typing import MutableMapping
 from elementpath.aliases import NamespacesType, NsmapType
+
+if TYPE_CHECKING:
+    from elementpath.schema_proxy import AbstractSchemaProxy
 
 _T = TypeVar("_T")
 _AnyStr = Union[str, bytes]
@@ -42,14 +46,6 @@ class LxmlAttribProtocol(Protocol):
     def __iter__(self) -> Iterator[Any]: ...
 
     def __len__(self) -> int: ...
-
-
-AttribType = Union[
-    MutableMapping[str, Any],
-    MutableMapping[Optional[str], Any],
-    LxmlAttribProtocol,
-    'XsdAttributeGroupProtocol'
-]
 
 
 class ElementProtocol(Sized, Hashable, Protocol):
@@ -80,7 +76,7 @@ class ElementProtocol(Sized, Hashable, Protocol):
     def tail(self) -> Optional[str]: ...
 
     @property
-    def attrib(self) -> AttribType: ...
+    def attrib(self) -> 'AttribType': ...
 
 
 class EtreeElementProtocol(ElementProtocol, Protocol):
@@ -256,6 +252,14 @@ class XsdTypeProtocol(XsdComponentProtocol, Protocol):
         """
         ...
 
+    @property
+    def simple_type(self) -> Optional['XsdTypeProtocol']:
+        """
+        The instance if it's a simpleType instance or the simpleType instance used for
+        deriving a complexType with simple content, `None` otherwise.
+        """
+        ...
+
 
 class XsdAttributeProtocol(XsdComponentProtocol, Protocol):
 
@@ -317,6 +321,9 @@ class XsdElementProtocol(XsdComponentProtocol, ElementProtocol, Protocol):
     @property
     def attrib(self) -> XsdAttributeGroupProtocol: ...
 
+    @property
+    def xpath_proxy(self) -> 'AbstractSchemaProxy': ...
+
 
 GT = TypeVar("GT")
 XsdGlobalValue = Union[GT, Tuple[ElementProtocol, Any]]
@@ -347,14 +354,36 @@ class XsdSchemaProtocol(XsdValidatorProtocol, ElementProtocol, Protocol):
     def iter(self, tag: Optional[str] = ...) -> Iterator[XsdXPathNodeType]: ...
 
     @property
+    def validity(self) -> str: ...
+
+    @property
+    def validation_attempted(self) -> str: ...
+
+    @property
     def tag(self) -> str: ...
 
     @property
     def attrib(self) -> MutableMapping[Optional[str], 'XsdAttributeProtocol']: ...
 
+    @property
+    def xpath_proxy(self) -> 'AbstractSchemaProxy': ...
+
+
+DocumentType = Union[ElementTree, DocumentProtocol]
+ElementType = Union[Element, ElementProtocol]
+SchemaElemType = Union[XsdSchemaProtocol, XsdElementProtocol]
+CommentType = Union[Element, ElementProtocol]
+ProcessingInstructionType = Union[Element, ElementProtocol]
+AttribType = Union[
+    MutableMapping[str, Any],
+    MutableMapping[Optional[str], Any],
+    LxmlAttribProtocol,
+    XsdAttributeGroupProtocol
+]
 
 __all__ = ['ElementProtocol', 'EtreeElementProtocol', 'LxmlAttribProtocol',
            'LxmlElementProtocol', 'DocumentProtocol', 'LxmlDocumentProtocol',
            'XsdValidatorProtocol', 'XsdComponentProtocol', 'XsdTypeProtocol',
-           'XsdAttributeProtocol', 'XsdAttributeGroupProtocol',
-           'XsdElementProtocol', 'GlobalMapsProtocol', 'XsdSchemaProtocol',]
+           'XsdAttributeProtocol', 'XsdAttributeGroupProtocol', 'XsdElementProtocol',
+           'GlobalMapsProtocol', 'XsdSchemaProtocol', 'DocumentType', 'ElementType',
+           'SchemaElemType', 'CommentType', 'ProcessingInstructionType', 'AttribType']

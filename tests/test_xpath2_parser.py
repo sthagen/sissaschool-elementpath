@@ -27,22 +27,10 @@ from decimal import Decimal
 from textwrap import dedent
 import xml.etree.ElementTree as ET
 
-try:
-    import lxml.etree as lxml_etree
-except ImportError:
-    lxml_etree = None
-
-try:
-    import xmlschema
-except ImportError:
-    xmlschema = None
-else:
-    xmlschema.XMLSchema.meta_schema.build()
-
 from elementpath import XPath2Parser, XPathContext, XPathSchemaContext, \
-    MissingContextError, ElementNode, select, iter_select
+    MissingContextError, ElementNode, select, iter_select, get_node_tree
 from elementpath.datatypes import xsd10_atomic_types, xsd11_atomic_types, DateTime, \
-    Date, Time, Timezone, DayTimeDuration, YearMonthDuration, UntypedAtomic, QName
+    Date, Date10, Time, Timezone, DayTimeDuration, YearMonthDuration, UntypedAtomic, QName
 from elementpath.namespaces import XPATH_FUNCTIONS_NAMESPACE
 from elementpath.collations import get_locale_category
 from elementpath.sequence_types import is_instance
@@ -52,6 +40,20 @@ try:
     from tests import test_xpath1_parser
 except ImportError:
     import test_xpath1_parser
+
+try:
+    import lxml.etree as lxml_etree
+except ImportError:
+    lxml_etree = None
+
+try:
+    import xmlschema
+    from xmlschema.xpath import XMLSchemaProxy
+except ImportError:
+    xmlschema = None
+    XMLSchemaProxy = None
+else:
+    xmlschema.XMLSchema.meta_schema.build()
 
 
 def get_sequence_type(value, xsd_version='1.0'):
@@ -541,20 +543,30 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
             with self.schema_bound_parser(schema.elements['root'].xpath_proxy):
                 root = self.etree.XML('<root>11</root>')
-                self.check_value('. le 10', False, context=XPathContext(root))
-                self.check_value('. le 20', True, context=XPathContext(root))
+                context = XPathContext(root, schema=self.parser.schema)
+                self.check_value('. le 10', False, context)
+                self.check_value('. le 20', True, context)
 
                 root = self.etree.XML('<root>eleven</root>')
-                self.wrong_type('. le 10', 'XPDY0050', context=XPathContext(root))
+                context = XPathContext(root, schema=self.parser.schema)
+                self.wrong_value('. le 10', 'FORG0001', context=context)
 
                 root = self.etree.XML('<value>12</value>')
+                context = XPathContext(root, schema=self.parser.schema)
                 with self.assertRaises(TypeError) as err:
-                    self.check_value('. le "11"', context=XPathContext(root))
+                    self.check_value('. le "11"', context)
                 self.assertIn('XPTY0004', str(err.exception))  # Static schema context error
 
-                with self.assertRaises(TypeError) as err:
-                    self.check_value('. le 10', context=XPathContext(root))
-                self.assertIn('XPTY0004', str(err.exception))  # Dynamic context error
+                self.check_value('. le 10', False, context=context)
+
+                # Schema information persists on parser (will be removed in v5.0)
+                context = XPathContext(root)
+                self.check_value('. le 10', False, context=context)
+
+            context = XPathContext(root)
+            with self.assertRaises(TypeError) as err:
+                self.check_value('. le 10', context=context)
+            self.assertIn('XPTY0004', str(err.exception))  # Dynamic context error
 
             schema = xmlschema.XMLSchema("""
                 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -789,10 +801,12 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
     def test_attribute_accessor(self):
         root = self.etree.XML('<A a="10" b="20">text<B/>tail<B/></A>')
         context = XPathContext(root)
-        self.check_select("attribute()", {'10', '20'}, context)
-        self.check_select("attribute(*)", {'10', '20'}, context)
-        self.check_select("attribute(a)", ['10'], context)
-        self.check_select("attribute(a, xs:int)", ['10'], context)
+        a = context.root.attributes[0]
+        b = context.root.attributes[1]
+        self.check_select("attribute()", [a, b], context)
+        self.check_select("attribute(*)", [a, b], context)
+        self.check_select("attribute(a)", [a], context)
+        self.check_select("attribute(a, xs:int)", [a], context)
 
         if xmlschema is not None:
             schema = xmlschema.XMLSchema("""
@@ -804,9 +818,13 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
                   </xs:complexType>
                 </xs:schema>""")
 
-            with self.schema_bound_parser(schema.elements['A'].xpath_proxy):
-                self.check_select("attribute(a, xs:int)", [10], context)
-                self.check_select("attribute(*, xs:int)", {10, 20}, context)
+            schema_proxy = schema.elements['A'].xpath_proxy
+            with self.schema_bound_parser(schema_proxy):
+                context = XPathContext(root, schema=schema_proxy)
+                a = context.root.attributes[0]
+                b = context.root.attributes[1]
+                self.check_select("attribute(a, xs:int)", [a], context)
+                self.check_select("attribute(*, xs:int)", [a, b], context)
                 self.check_select("attribute(a, xs:string)", [], context)
                 self.check_select("attribute(*, xs:string)", [], context)
 
@@ -816,7 +834,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
         context = XPathContext(root=element)
         self.check_select("self::node()", [context.root], context)
-        self.check_select("self::attribute()", ['0212349350'], context)
+        self.check_select("self::attribute()", [context.root.attributes[0]], context)
 
         context.item = 7
         self.check_select("node()", [], context)
@@ -1404,9 +1422,6 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
     @unittest.skipIf(xmlschema is None, "xmlschema library is not installed!")
     def test_raw_resolution_for_issue_73(self):
-        from xmlschema.xpath import XMLSchemaProxy
-        from elementpath import get_node_tree, XPath2Parser, XPathContext
-        from elementpath.datatypes import Date10
 
         xsd_source = dedent("""\
         <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
@@ -1453,10 +1468,9 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         assert date_node.xsd_type is None
         assert date_node.typed_value == '2018-01-23'
 
-        context = XPathContext(root_node)
+        context = XPathContext(root_node, schema=schema_proxy)
         result = root_token.get_results(context)
 
-        assert date_node.xsd_type is xmlschema.XMLSchema10.meta_schema.types['date']
         assert date_node.typed_value == Date10(2018, 1, 23)
         assert len(result) == 5
         assert result[-1] == Date10(2018, 1, 23)

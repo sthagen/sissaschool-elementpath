@@ -200,10 +200,14 @@ class XPath30ParserTest(test_xpath2_parser.XPath2ParserTest):
         self.assertTrue(func.match_function_test('function(*)'))
         self.assertEqual(func.source, expression.replace(" $x ", '$x'))
 
-        func = cast(XPathFunction, self.parser.parse("function($x as item()) as xs:integer { $x }"))
+        func = cast(
+            XPathFunction, self.parser.parse("function($x as item()) as xs:integer { $x }")
+        )
         self.assertTrue(func.match_function_test('function(item()) as item()'))
 
-        func = cast(XPathFunction, self.parser.parse("function($x as item()) as item() { $x }"))
+        func = cast(
+            XPathFunction, self.parser.parse("function($x as item()) as item() { $x }")
+        )
         self.assertTrue(func.match_function_test('function(xs:string) as item()'))
 
     def test_dynamic_function_call(self):
@@ -852,7 +856,7 @@ class XPath30FunctionsTest(test_xpath2_functions.XPath2FunctionsTest):
             'fn:parse-xml-fragment("<alpha>abcd</alpha><beta>abcd</beta>")'
         ).evaluate(context)
         self.assertIsInstance(result, DocumentNode)
-        self.assertTrue(result.is_extended())
+        self.assertTrue(result.is_extended)
         self.assertTrue(is_etree_document(result.document))
         self.assertEqual(result[0].elem.tag, 'alpha')
         self.assertEqual(result[0].elem.text, 'abcd')
@@ -864,7 +868,7 @@ class XPath30FunctionsTest(test_xpath2_functions.XPath2FunctionsTest):
         ).evaluate(context)
         self.assertIsInstance(result, DocumentNode)
         if not is_lxml_etree_document(result.document):
-            self.assertTrue(result.is_extended())
+            self.assertTrue(result.is_extended)
 
         self.assertTrue(is_etree_document(result.document))
         self.assertEqual(result[0].value, 'He was ')
@@ -1189,7 +1193,8 @@ class XPath30FunctionsTest(test_xpath2_functions.XPath2FunctionsTest):
 
         token = self.parser.parse(
             'fn:fold-left(1 to 5, "$zero", fn:concat("$f(", ?, ", ", ?, ")"))')
-        self.assertListEqual(token.evaluate(context), ["$f($f($f($f($f($zero, 1), 2), 3), 4), 5)"])
+        self.assertListEqual(token.evaluate(context),
+                             ["$f($f($f($f($f($zero, 1), 2), 3), 4), 5)"])
 
     def test_fold_right(self):
         expression = 'fn:fold-right(1 to 5, 0, function($a, $b) {$a + $b})'

@@ -16,8 +16,8 @@ from typing import cast, Any, ClassVar, Dict, List, Optional, Set, Tuple, Type, 
 
 from elementpath._typing import Callable, MutableMapping, Sequence
 from elementpath.aliases import NamespacesType, NargsType
-from elementpath.exceptions import MissingContextError, UnsupportedFeatureError, \
-    ElementPathValueError, ElementPathNameError, ElementPathKeyError, xpath_error
+from elementpath.exceptions import xpath_error, UnsupportedFeatureError, \
+    ElementPathValueError, ElementPathNameError, ElementPathKeyError, MissingContextError
 from elementpath.helpers import upper_camel_case
 from elementpath.collations import UNICODE_CODEPOINT_COLLATION
 from elementpath.datatypes import QName
@@ -27,7 +27,7 @@ from elementpath.sequence_types import match_sequence_type
 from elementpath.schema_proxy import AbstractSchemaProxy
 from elementpath.xpath_context import ContextType
 from elementpath.xpath_tokens import XPathTokenType, XPathToken, XPathAxis, \
-    XPathFunction, ProxyToken
+    XPathFunction, ProxyToken, RootToken
 
 
 class XPath1Parser(Parser[XPathTokenType]):
@@ -242,11 +242,28 @@ class XPath1Parser(Parser[XPathTokenType]):
         return cast(Type[XPathFunction], cls.register(symbol, **kwargs))
 
     def parse(self, source: str) -> XPathToken:
-        root_token = super(XPath1Parser, self).parse(source)
+        if self.tokenizer is None:
+            self.tokenizer = self.create_tokenizer(self.symbol_table)
+
+        root_token = super().parse(source)
+        if root_token.label in ('sequence type', 'function test'):
+            raise root_token.error('XPST0003', "not allowed in XPath expression")
+
         try:
             root_token.evaluate()  # Static context evaluation
         except MissingContextError:
             pass
+
+        if self.schema is not None:
+            # Static evaluation using a schema context
+            context = self.schema.get_context()
+            for _ in root_token.select(context):
+                pass
+            return RootToken(root_token)
+        elif self.__class__.__module__.startswith('xmlschema.'):
+            # Workaround for xmlschema < 4.0: returns a root token for sharing schema
+            return RootToken(root_token)
+
         return root_token
 
     def expected_next(self, *symbols: str, message: Optional[str] = None) -> None:

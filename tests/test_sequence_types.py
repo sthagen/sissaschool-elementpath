@@ -216,7 +216,7 @@ class SequenceTypesTest(unittest.TestCase):
             self.assertFalse(match_sequence_type(root, 'element(root, xs:untyped)'))
             root.xsd_type = None
 
-        root.elem.attrib[XSI_NIL] = 'true'
+        root.obj.attrib[XSI_NIL] = 'true'
         self.assertFalse(match_sequence_type(root, 'element(root, xs:untyped)'))
         self.assertTrue(match_sequence_type(root, 'element(root, xs:untyped?)'))
         root.elem.attrib.pop(XSI_NIL)

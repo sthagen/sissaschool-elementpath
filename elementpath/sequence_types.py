@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast, Any, Optional
 from elementpath.exceptions import ElementPathKeyError, xpath_error
 from elementpath.helpers import collapse_white_spaces, OCCURRENCE_INDICATORS, Patterns
 from elementpath.namespaces import XSD_NAMESPACE, XSD_ERROR, XSD_ANY_SIMPLE_TYPE, XSD_NUMERIC, \
-    get_expanded_name
+    get_expanded_name, XSD_UNTYPED, XSD_UNTYPED_ATOMIC
 from elementpath.datatypes import xsd10_atomic_types, xsd11_atomic_types, AnyAtomicType, \
     QName, NumericProxy
 from elementpath.xpath_nodes import XPathNode, DocumentNode, ElementNode, AttributeNode
@@ -321,7 +321,7 @@ def match_sequence_type(value: Any,
             return all(match_st(k, key_st) and match_st(v, value_st) for k, v in v.items())
 
         if isinstance(v, XPathNode):
-            value_kind = v.kind
+            node_kind = v.node_kind
         elif '(' in st:
             return False
         elif not strict and st == 'xs:anyURI' and isinstance(v, str):
@@ -334,11 +334,11 @@ def match_sequence_type(value: Any,
 
         if st == 'node()':
             return True
-        elif not st.startswith(value_kind) or not st.endswith(')'):
+        elif not st.startswith(node_kind) or not st.endswith(')'):
             return False
-        elif st == f'{value_kind}()':
+        elif st == f'{node_kind}()':
             return True
-        elif value_kind == 'document':
+        elif node_kind == 'document':
             element_test = st[14:-1]
             if not element_test:
                 return True
@@ -346,7 +346,7 @@ def match_sequence_type(value: Any,
             return any(
                 match_st(e, element_test) for e in document if isinstance(e, ElementNode)
             )
-        elif value_kind not in ('element', 'attribute'):
+        elif node_kind not in ('element', 'attribute'):
             return False
 
         _, params = st[:-1].split('(')
@@ -360,8 +360,9 @@ def match_sequence_type(value: Any,
                 return False
 
             if type_name == 'xs:untyped':
-                if isinstance(v, (ElementNode, AttributeNode)) \
-                        and v.xsd_type is not None:
+                if isinstance(v, AttributeNode) and v.type_name != XSD_UNTYPED_ATOMIC:
+                    return False
+                if isinstance(v, ElementNode) and v.type_name != XSD_UNTYPED:
                     return False
             else:
                 try:

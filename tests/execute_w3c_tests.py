@@ -34,7 +34,6 @@ from urllib.parse import urlsplit
 from xml.etree import ElementTree
 import lxml.etree
 
-import elementpath
 import xmlschema
 
 from elementpath import ElementPathError, XPath2Parser, XPathContext, XPathNode, \
@@ -44,6 +43,7 @@ from elementpath.xpath_tokens import XPathFunction, XPathMap, XPathArray
 from elementpath.datatypes import AnyAtomicType
 from elementpath.sequence_types import is_sequence_type, match_sequence_type
 from elementpath.xpath31 import XPath31Parser
+from elementpath.xpath_nodes import EtreeElementNode
 
 
 PY38_PLUS = sys.version_info > (3, 8)
@@ -794,6 +794,7 @@ class TestCase(object):
             context = XPathContext(
                 root=self.etree.XML("<empty/>"),
                 namespaces=test_namespaces,
+                schema=self.parser.schema,
                 timezone='Z',
                 default_language=self.default_language,
                 default_calendar=self.calendar,
@@ -840,6 +841,8 @@ class TestCase(object):
 
             if test_namespaces:
                 kwargs['namespaces'] = test_namespaces
+            if self.parser.schema:
+                kwargs['schema'] = self.parser.schema
             if variables:
                 kwargs['variables'] = variables
             if documents:
@@ -1335,9 +1338,10 @@ class Result(object):
         if isinstance(result, list):
             parts = []
             for item in result:
-                if isinstance(item, elementpath.ElementNode):
+                if isinstance(item, EtreeElementNode):
                     tail, item.elem.tail = item.elem.tail, None
-                    parts.append(tostring(item.elem).decode('utf-8').strip())
+                    string_value = tostring(item.elem)  # type: ignore
+                    parts.append(string_value.decode('utf-8').strip())
                     item.elem.tail = tail
                 elif isinstance(item, XPathNode):
                     parts.append(str(item.value))
