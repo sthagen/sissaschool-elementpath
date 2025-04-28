@@ -10,14 +10,16 @@
 """
 This module defines a class for handling Unicode subsets with less usage of memory.
 """
+import sys
+import warnings
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Iterator, MutableSet
 from functools import wraps
 from sys import maxunicode
 from types import ModuleType
-from typing import cast, Callable, Dict, List, Optional, Tuple, Union
+from typing import cast, Optional, Union
 from unicodedata import unidata_version
 
-from elementpath._typing import Iterable, Iterator, MutableSet
 from .codepoints import RegexError, CodePoint, code_point_order, \
     code_point_repr, iter_code_points, iterparse_character_subset
 from . import unicode_blocks
@@ -34,7 +36,7 @@ UNICODE_VERSIONS = (
 )
 
 
-CodePointsArgType = Union[None, str, 'UnicodeSubset', List[CodePoint], Iterable[CodePoint]]
+CodePointsArgType = Union[None, str, 'UnicodeSubset', list[CodePoint], Iterable[CodePoint]]
 
 
 class UnicodeSubset(MutableSet[CodePoint]):
@@ -47,7 +49,7 @@ class UnicodeSubset(MutableSet[CodePoint]):
     instance ora a string equivalent of a regex character set.
     """
     __slots__ = '_codepoints',
-    _codepoints: List[CodePoint]
+    _codepoints: list[CodePoint]
 
     def __init__(self, codepoints: CodePointsArgType = None) -> None:
         if not codepoints:
@@ -61,7 +63,7 @@ class UnicodeSubset(MutableSet[CodePoint]):
             self.update(codepoints)
 
     @property
-    def codepoints(self) -> List[CodePoint]:
+    def codepoints(self) -> list[CodePoint]:
         return self._codepoints
 
     @codepoints.setter
@@ -352,7 +354,7 @@ class UnicodeSubset(MutableSet[CodePoint]):
         return obj.__ixor__(other)
 
 
-def iterparse_unicode_data(url: str) -> Iterator[Tuple[int, str]]:
+def iterparse_unicode_data(url: str) -> Iterator[tuple[int, str]]:
     """Iterate UnicodeData.txt source giving back codepoints and categories."""
     from urllib.request import urlopen
 
@@ -382,8 +384,8 @@ def iterparse_unicode_data(url: str) -> Iterator[Tuple[int, str]]:
         yield cp, 'Cn'
 
 
-def get_categories_from_url(url: str) -> Dict[str, UnicodeSubset]:
-    categories: Dict[str, List[CodePoint]] = defaultdict(list)
+def get_categories_from_url(url: str) -> dict[str, UnicodeSubset]:
+    categories: dict[str, list[CodePoint]] = defaultdict(list)
 
     major_category = 'C'
     major_start_cp, major_next_cp = 0, 1
@@ -425,7 +427,7 @@ def get_categories_from_url(url: str) -> Dict[str, UnicodeSubset]:
     return {k: UnicodeSubset(v) for k, v in categories.items()}
 
 
-def get_categories(version_info: Tuple[int, ...], module: ModuleType) -> Dict[str, UnicodeSubset]:
+def get_categories(version_info: tuple[int, ...], module: ModuleType) -> dict[str, UnicodeSubset]:
     categories = {k: v.copy() for k, v in module.UNICODE_CATEGORIES.items()}
     for name in module.__dict__:
         if not name.startswith('DIFF_CATEGORIES_VER_'):
@@ -464,14 +466,14 @@ def get_categories(version_info: Tuple[int, ...], module: ModuleType) -> Dict[st
 
 class UnicodeData:
 
-    _blocks: Dict[str, Union[str, UnicodeSubset]]
+    _blocks: dict[str, Union[str, UnicodeSubset]]
 
     @staticmethod
     def _unicode_block_key(name: str) -> str:
         return name.upper().replace(' ', '').replace('_', '').replace('-', '')
 
     def __init__(self, version: Optional[str] = None,
-                 categories: Optional[Dict[str, UnicodeSubset]] = None) -> None:
+                 categories: Optional[dict[str, UnicodeSubset]] = None) -> None:
         if version is None:
             version = unidata_version
         elif version not in UNICODE_VERSIONS:
@@ -484,7 +486,14 @@ class UnicodeData:
         elif self.version in unicode_categories.UNICODE_VERSIONS:
             self._categories = get_categories(version_info, unicode_categories)
         else:
-            raise TypeError(f"can't get version {version} from module")
+            from . import categories_fallback
+
+            py_version = '.'.join(str(n) for n in sys.version_info[:2])
+            msg = (f"unexpected Unicode version {version} for Python {py_version}, "
+                   f"use unicodedata module for building categories map.")
+            warnings.warn(UnicodeWarning(msg))
+
+            self._categories = categories_fallback.get_unicodedata_categories()
 
         # Build blocks dict for version
         superseded_blocks = []
@@ -554,7 +563,7 @@ __unicode_data = UnicodeData()
 # Simple cache for Unicode subsets defined using callables with no-arguments, that
 # can include subsets defined on versioned Unicode data or fixed codepoints. This
 # cache is cleared if Unicode data is reinstalled.
-__subsets_cache: Dict[Callable[[], UnicodeSubset], UnicodeSubset] = {}
+__subsets_cache: dict[Callable[[], UnicodeSubset], UnicodeSubset] = {}
 
 
 def install_unicode_data(version: Optional[str] = None,

@@ -9,11 +9,11 @@
 #
 import importlib
 from collections import deque
+from collections.abc import Iterator
 from urllib.parse import urljoin
-from typing import cast, Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import cast, Any, Optional, TYPE_CHECKING, Union
 from xml.etree import ElementTree
 
-from elementpath._typing import Deque, Iterator
 from elementpath.exceptions import ElementPathRuntimeError, \
     ElementPathValueError, ElementPathKeyError
 from elementpath.aliases import NamespacesType, NsmapType, SequenceType
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from elementpath.schema_proxy import AbstractSchemaProxy
 
 __all__ = ['TypedNodeType', 'ParentNodeType', 'ChildNodeType', 'ElementMapType',
-           'XPathNode', 'NamespaceNode', 'AttributeNode', 'TextAttributeNode',
+           'XPathNodeTree', 'XPathNode', 'NamespaceNode', 'AttributeNode', 'TextAttributeNode',
            'SchemaAttributeNode', 'TextNode', 'CommentNode', 'ProcessingInstructionNode',
            'ElementNode', 'EtreeElementNode', 'LazyElementNode', 'SchemaElementNode',
            'DocumentNode', 'EtreeDocumentNode', 'RootNodeType', 'RootArgType']
@@ -43,14 +43,12 @@ _EMPTY_NAME_PATH = f'*[Q{{{XPATH_FUNCTIONS_NAMESPACE}}}local-name()=""]'
 _XSD_SPECIAL_TYPES = {XSD_ANY_TYPE, XSD_ANY_SIMPLE_TYPE, XSD_ANY_ATOMIC_TYPE}
 
 TypedNodeType = Union['AttributeNode', 'ElementNode']
+TaggedNodeType = Union['ElementNode', 'CommentNode', 'ProcessingInstructionNode']
 ParentNodeType = Union['DocumentNode', 'ElementNode']
-ChildNodeType = Union['TextNode', 'ElementNode', 'CommentNode', 'ProcessingInstructionNode']
-ElementMapType = Dict[ElementType, 'ElementNode']
+ChildNodeType = Union['TextNode', TaggedNodeType]
+ElementMapType = dict[object, TaggedNodeType]
 
 
-# TODO for v5.0: use an internal shared object for storing same data once. This
-#   will replace position argument and some attributes in element nodes. Position
-#   argument will be kept only for namespace and attribute nodes.
 class XPathNodeTree:
     """
     Status of the node tree structure, shared between nodes.
@@ -60,19 +58,20 @@ class XPathNodeTree:
     namespaces: NamespacesType
     schema: Optional['AbstractSchemaProxy']
     uri: Optional[str]
-    total: int
 
-    __slots__ = ('root', 'namespaces', 'uri', 'elements', 'schema', 'total')
+    __slots__ = ('root_node', 'uri', 'namespaces', 'ns_offset', 'elements', 'schema', 'position')
 
     def __init__(self, root: ParentNodeType,
+                 uri: Optional[str] = None,
                  namespaces: Optional[NamespacesType] = None,
-                 uri: Optional[str] = None) -> None:
-        self.root = root
-        self.namespaces = namespaces if namespaces is not None else {}
+                 elements: Optional[ElementMapType] = None,
+                 schema: Optional['AbstractSchemaProxy'] = None) -> None:
+
+        self.root_node = root
+        self.namespaces = {} if namespaces is None else namespaces
         self.uri = uri
-        self.elements = {}
-        self.schema = None
-        self.total = 1
+        self.elements = {} if elements is None else elements
+        self.schema = schema
 
 
 ###
@@ -96,14 +95,14 @@ class XPathNode:
     # XDM accessors
 
     @property
-    def attributes(self) -> Optional[List['AttributeNode']]:
+    def attributes(self) -> Optional[list['AttributeNode']]:
         return None
 
     @property
     def base_uri(self) -> Optional[str]:
         return self.parent.base_uri if self.parent is not None else None
 
-    children: Optional[List[ChildNodeType]]
+    children: Optional[list[ChildNodeType]]
 
     @property
     def document_uri(self) -> Optional[str]:
@@ -118,7 +117,7 @@ class XPathNode:
         return None
 
     @property
-    def namespace_nodes(self) -> Optional[List['NamespaceNode']]:
+    def namespace_nodes(self) -> Optional[list['NamespaceNode']]:
         return None
 
     @property
@@ -195,7 +194,7 @@ class XPathNode:
 
     @property
     def root_node(self) -> 'XPathNode':
-        return self if self.parent is None else self.parent.root_node
+        return self if self.parent is None else self.parent.tree.root_node
 
     @property
     def path(self) -> str:
@@ -245,7 +244,7 @@ class XPathNode:
         return None
 
     def apply_schema(self, schema: 'AbstractSchemaProxy') -> None:
-        """Set XSD types for elements and attribute nodes from schema proxy instance."""
+        """set XSD types for elements and attribute nodes from schema proxy instance."""
         if self.parent is not None:
             self.parent.apply_schema(schema)
 
@@ -314,9 +313,6 @@ class NamespaceNode(XPathNode):
 
     value = uri
 
-    def as_item(self) -> Tuple[Optional[str], str]:
-        return self.name, self.obj
-
     @property
     def name_path(self) -> str:
         return self.prefix or _EMPTY_NAME_PATH
@@ -355,7 +351,6 @@ class AttributeNode(XPathNode):
     """
     name: Optional[str]
     parent: Optional['ElementNode']
-    schema: Optional['AbstractSchemaProxy']
     xsd_type: Optional[XsdTypeProtocol]
 
     __slots__ = ('xsd_type',)
@@ -364,6 +359,9 @@ class AttributeNode(XPathNode):
         if cls is AttributeNode:
             return object.__new__(TextAttributeNode)
         return object.__new__(cls)
+
+    def __repr__(self) -> str:
+        return f'{self.__class__.__name__}(name={self.name!r}, value={self.value!r})'
 
     @property
     def uri_qualified_name(self) -> Optional[str]:
@@ -396,8 +394,6 @@ class AttributeNode(XPathNode):
         return self.xsd_type is not None and self.xsd_type.is_list()
 
     def match_name(self, name: str, default_namespace: Optional[str] = None) -> bool:
-        if self.name is None:
-            return False
         return self.name == name or '*' in name and match_wildcard(self.name, name)
 
     @property
@@ -474,12 +470,6 @@ class TextAttributeNode(AttributeNode):
     def value(self) -> str:
         return self.obj
 
-    def as_item(self) -> Tuple[str, str]:
-        return self.name, self.obj
-
-    def match_name(self, name: str, default_namespace: Optional[str] = None) -> bool:
-        return self.name == name or '*' in name and match_wildcard(self.name, name)
-
     @property
     def string_value(self) -> str:
         return self.obj
@@ -526,9 +516,6 @@ class SchemaAttributeNode(AttributeNode):
     def xsd_attribute(self) -> XsdAttributeProtocol:
         return self.obj
     value = xsd_attribute
-
-    def as_item(self) -> Tuple[Optional[str], object]:
-        return self.name, self.obj
 
     @property
     def string_value(self) -> str:
@@ -578,6 +565,9 @@ class TextNode(XPathNode):
         self.obj = content
         self.parent = parent
         self.position = position
+
+        if parent is not None:
+            parent.children.append(self)
 
     def __repr__(self) -> str:
         return '%s(%r)' % (self.__class__.__name__, self.obj)
@@ -652,8 +642,13 @@ class CommentNode(XPathNode):
             self.obj = ElementTree.Comment(content)
         else:
             self.obj = content
+
         self.parent = parent
         self.position = position
+
+        if parent is not None:
+            parent.children.append(self)
+            parent.tree.elements[self.obj] = self
 
     def __repr__(self) -> str:
         return '%s(%r)' % (self.__class__.__name__, self.obj.text or '')
@@ -727,8 +722,13 @@ class ProcessingInstructionNode(XPathNode):
             else:
                 self.name = (target.text or '').partition(' ')[0]
             self.obj = target
+
         self.parent = parent
         self.position = position
+
+        if parent is not None:
+            parent.children.append(self)
+            parent.tree.elements[self.obj] = self
 
     def __repr__(self) -> str:
         return '%s(target=%r, content=%r)' % (self.__class__.__name__, self.name, self.content)
@@ -796,20 +796,17 @@ class ElementNode(XPathNode):
     """
     name: Optional[str]
     obj: object
-    nsmap: Union[NsmapType, NamespacesType]
-    children: List[ChildNodeType]
+    tree: XPathNodeTree
+    children: list[ChildNodeType]
     parent: Optional[ParentNodeType]
     xsd_type: Optional[XsdTypeProtocol]
+    _nsmap: Union[NsmapType, NamespacesType, None]
 
     # Lazy protected attributes
-    _uri: str
-    _schema: 'AbstractSchemaProxy'
-    _elements: ElementMapType
-    _namespace_nodes: List[NamespaceNode]
-    _attributes: List[AttributeNode]
+    _namespace_nodes: list[NamespaceNode]
+    _attributes: list[AttributeNode]
 
-    __slots__ = ('children', 'nsmap', 'xsd_type', '_uri', '_schema',
-                 '_elements', '_namespace_nodes', '_attributes')
+    __slots__ = ('children', 'tree', 'xsd_type', '_nsmap', '_namespace_nodes', '_attributes')
 
     def __new__(cls, *args: Any, **kwargs: Any) -> 'ElementNode':
         if cls is ElementNode:
@@ -819,7 +816,7 @@ class ElementNode(XPathNode):
     def __repr__(self) -> str:
         return '%s(elem=%r)' % (self.__class__.__name__, self.obj)
 
-    def __getitem__(self, i: Union[int, slice]) -> Union[ChildNodeType, List[ChildNodeType]]:
+    def __getitem__(self, i: Union[int, slice]) -> Union[ChildNodeType, list[ChildNodeType]]:
         return self.children[i]
 
     def __len__(self) -> int:
@@ -827,6 +824,19 @@ class ElementNode(XPathNode):
 
     def __iter__(self) -> Iterator[ChildNodeType]:
         yield from self.children
+
+    @property
+    def nsmap(self) -> Union[NsmapType, NamespacesType]:
+        if hasattr(self.obj, 'nsmap'):
+            return cast(NsmapType, self.obj.nsmap)
+        elif self._nsmap is not None:
+            return self._nsmap
+        else:
+            return self.tree.namespaces
+
+    @nsmap.setter
+    def nsmap(self, nsmap: Union[NsmapType, NamespacesType]) -> None:
+        self._nsmap = nsmap
 
     @property
     def uri_qualified_name(self) -> Optional[str]:
@@ -839,7 +849,7 @@ class ElementNode(XPathNode):
             return f'Q{{}}{self.name}'
 
     @property
-    def attributes(self) -> List[AttributeNode]:
+    def attributes(self) -> list[AttributeNode]:
         return []
 
     @property
@@ -864,7 +874,7 @@ class ElementNode(XPathNode):
         return root_type.name == XSD_IDREF or root_type.name == XSD_IDREFS
 
     @property
-    def namespace_nodes(self) -> List[NamespaceNode]:
+    def namespace_nodes(self) -> list[NamespaceNode]:
         if not hasattr(self, '_namespace_nodes'):
             # Lazy generation of namespace nodes of the element
             position = self.position + 1
@@ -912,33 +922,27 @@ class ElementNode(XPathNode):
 
     @property
     def uri(self) -> Optional[str]:
-        return getattr(self, '_uri', None)
+        return self.tree.uri
 
     @uri.setter
     def uri(self, uri: str) -> None:
-        self._uri = uri
+        self.tree.uri = uri
 
     @property
     def schema(self) -> Optional['AbstractSchemaProxy']:
-        root_node = self
-        while isinstance(root_node.parent, EtreeElementNode):
-            root_node = root_node.parent
-        return getattr(root_node, '_schema', None)
+        return self.tree.schema
 
     @schema.setter
     def schema(self, schema: 'AbstractSchemaProxy') -> None:
-        root_node = self
-        while isinstance(root_node.parent, EtreeElementNode):
-            root_node = root_node.parent
-        root_node._schema = schema
+        self.tree.schema = schema
 
     @property
     def elements(self) -> Optional[ElementMapType]:
-        return getattr(self, '_elements', None)
+        return self.tree.elements
 
     @elements.setter
     def elements(self, elements: ElementMapType) -> None:
-        self._elements = elements
+        self.tree.elements = elements
 
     @property
     def name_path(self) -> str:
@@ -965,6 +969,12 @@ class ElementNode(XPathNode):
     def is_typed(self) -> bool:
         return self.xsd_type is not None
 
+    def apply_schema(self, schema: 'AbstractSchemaProxy') -> None:
+        return
+
+    def clear_types(self) -> None:
+        return
+
     def match_name(self, name: str, default_namespace: Optional[str] = None) -> bool:
         if self.name is None:
             return False
@@ -977,17 +987,9 @@ class ElementNode(XPathNode):
         else:
             return self.name == f'{{{default_namespace}}}{name}'
 
-    def get_element_node(self, elem: Union[ElementProtocol, SchemaElemType]) \
-            -> Optional['ElementNode']:
-        if hasattr(self, '_elements'):
-            return self._elements.get(elem)
-
-        # Fallback if there is not the map of elements but do not expand lazy elements
-        for node in self.iter():
-            if isinstance(node, ElementNode) and elem is node.obj:
-                return node
-        else:
-            return None
+    def get_element_node(self, elem: Union[ElementType, SchemaElemType]) \
+            -> Optional[TaggedNodeType]:
+        return self.tree.elements.get(elem)
 
     def get_document_node(self, replace: bool = True, as_parent: bool = True) -> 'DocumentNode':
         """
@@ -1020,7 +1022,7 @@ class ElementNode(XPathNode):
         """Iterates the tree not including the not built lazy components."""
         yield self
 
-        iterators: Deque[Any] = deque()  # slightly faster than list()
+        iterators: deque[Any] = deque()  # slightly faster than list()
         children: Iterator[Any] = iter(self.children)
 
         if hasattr(self, '_namespace_nodes'):
@@ -1052,7 +1054,7 @@ class ElementNode(XPathNode):
         if with_self:
             yield self
 
-        iterators: Deque[Any] = deque()
+        iterators: deque[Any] = deque()
         children: Iterator[Any] = iter(self.children)
 
         while True:
@@ -1074,10 +1076,9 @@ class EtreeElementNode(ElementNode):
     """
     XPath element nodes for wrapping ElementTree elements.
 
-    :param elem: the wrapped Element or XSD schema/element.
+    :param elem: the wrapped Element.
     :param parent: the parent document node or element node.
     :param position: the position of the node in the document.
-    :param nsmap: an optional mapping from prefix to namespace URI.
     """
     name: str
     obj: ElementType
@@ -1089,7 +1090,7 @@ class EtreeElementNode(ElementNode):
                  elem: ElementType,
                  parent: Optional[ParentNodeType] = None,
                  position: int = 1,
-                 nsmap: Union[NsmapType, NamespacesType, None] = None):
+                 nsmap: Union[NsmapType, NamespacesType, None] = None) -> None:
 
         self.name = elem.tag
         self.obj = elem
@@ -1097,14 +1098,15 @@ class EtreeElementNode(ElementNode):
         self.position = position
         self.children = []
         self.xsd_type = None
+        self._nsmap = nsmap
 
-        if nsmap is not None:
-            self.nsmap = nsmap
+        if parent is not None:
+            self.tree = parent.tree
+            parent.children.append(self)
         else:
-            try:
-                self.nsmap = cast(Dict[Any, str], getattr(elem, 'nsmap'))
-            except AttributeError:
-                self.nsmap = {}
+            self.tree = XPathNodeTree(self)
+
+        self.tree.elements[elem] = self
 
     @property
     def content(self) -> ElementType:
@@ -1113,9 +1115,10 @@ class EtreeElementNode(ElementNode):
     elem = value = content
 
     @property
-    def attributes(self) -> List[AttributeNode]:
+    def attributes(self) -> list[AttributeNode]:
         if not hasattr(self, '_attributes'):
-            position = self.position + len(self.nsmap) + int('xml' not in self.nsmap) + 1
+            nsmap = self.nsmap
+            position = self.position + len(nsmap) + int('xml' not in nsmap) + 1
             self._attributes = [
                 TextAttributeNode(name, value, self, pos)
                 for pos, (name, value) in enumerate(self.obj.attrib.items(), position)
@@ -1149,14 +1152,6 @@ class EtreeElementNode(ElementNode):
             # Element-only text content is normalized
             return ''.join(etree_iter_strings(self.obj, normalize=True))
         return ''.join(etree_iter_strings(self.obj))
-
-    @property
-    def typed_value(self) -> SequenceType[AtomicType]:
-        values = [v for v in self.iter_typed_values]
-        if len(values) == 1:
-            return values[0]
-        else:
-            return values
 
     @property
     def iter_typed_values(self) -> Iterator[AtomicType]:
@@ -1215,7 +1210,7 @@ class EtreeElementNode(ElementNode):
             paths = ['/']
             children = iter((root_node,))
 
-        iterators: List[Any] = []
+        iterators: list[Any] = []
         while True:
             for elem in children:
                 if not isinstance(elem, EtreeElementNode):
@@ -1297,17 +1292,22 @@ class EtreeElementNode(ElementNode):
         :param as_parent: if `True` the root node/s of parent attribute is set with \
         the dummy document node, otherwise is set to `None`.
         """
-        root_node: ParentNodeType = self
-        while root_node.parent is not None:
-            root_node = root_node.parent
+        if isinstance(self.tree.root_node, DocumentNode):
+            return self.tree.root_node
 
-        if isinstance(root_node, DocumentNode):
-            return root_node
+        root_node = self.tree.root_node
+        assert isinstance(root_node, EtreeElementNode)
 
         if root_node.obj.__class__.__module__ not in ('lxml.etree', 'lxml.html'):
             etree = ElementTree
         else:
             etree = importlib.import_module('lxml.etree')
+
+        document_node = object.__new__(EtreeDocumentNode)
+        document_node.parent = None
+        document_node.tree = root_node.tree
+        if as_parent:
+            document_node.tree.root_node = document_node
 
         if replace:
             document = etree.ElementTree()
@@ -1317,24 +1317,23 @@ class EtreeElementNode(ElementNode):
                         document = etree.ElementTree(cast(ElementTree.Element, child.obj))
                         break
 
-            document_node = DocumentNode(document, root_node.uri, root_node.position)
-            for child in root_node.children:
-                document_node.children.append(child)
+            document_node.obj = document
+            document_node.position = root_node.position
+            document_node.children = root_node.children
+
+            for child in document_node.children:
                 child.parent = document_node if as_parent else None
 
-            if root_node.elements is not None:
-                root_node.elements.pop(root_node, None)  # type: ignore[call-overload]
-                document_node.elements = root_node.elements
+            root_node.tree.elements.pop(root_node.obj)
             del root_node
 
         else:
-            document = etree.ElementTree(cast(ElementTree.Element, root_node.obj))
-            document_node = DocumentNode(document, root_node.uri, root_node.position - 1)
-            document_node.children.append(root_node)
+            document_node.obj = etree.ElementTree(cast(ElementTree.Element, root_node.obj))
+            document_node.position = root_node.position - 1
+            document_node.children = [root_node]
+
             if as_parent:
                 root_node.parent = document_node
-            if root_node.elements is not None:
-                document_node.elements = root_node.elements
 
         return document_node
 
@@ -1353,19 +1352,18 @@ class LazyElementNode(EtreeElementNode):
     def __iter__(self) -> Iterator[ChildNodeType]:
         if not self.children:
             if self.obj.text is not None:
-                self.children.append(TextNode(self.obj.text, self))
+                TextNode(self.obj.text, self)
             if len(self.obj):
                 for elem in self.obj:
                     if not callable(elem.tag):
-                        nsmap = cast(Dict[Any, str], getattr(elem, 'nsmap', self.nsmap))
-                        self.children.append(LazyElementNode(elem, self, nsmap=nsmap))
+                        LazyElementNode(elem, self)
                     elif elem.tag.__name__ == 'Comment':  # type: ignore[attr-defined]
-                        self.children.append(CommentNode(elem, self))
+                        CommentNode(elem, self)
                     else:
-                        self.children.append(ProcessingInstructionNode(elem, parent=self))
+                        ProcessingInstructionNode(elem, parent=self)
 
                     if elem.tail is not None:
-                        self.children.append(TextNode(elem.tail, self))
+                        TextNode(elem.tail, self)
 
         yield from self.children
 
@@ -1395,15 +1393,24 @@ class SchemaElementNode(ElementNode):
                  elem: SchemaElemType,
                  parent: Optional[ParentNodeType] = None,
                  position: int = 1,
-                 nsmap: Optional[NsmapType] = None):
+                 nsmap: Union[NsmapType, NamespacesType, None] = None):
 
         self.name = elem.tag
         self.obj = elem
         self.parent = parent
         self.position = position
-        self.nsmap = nsmap if nsmap is not None else {}
         self.children = []
         self.xsd_type = getattr(elem, 'type', None)
+        self._nsmap = nsmap
+
+        try:
+            self.tree = parent.tree  # type: ignore[union-attr, unused-ignore]
+        except AttributeError:
+            self.tree = XPathNodeTree(self)
+        else:
+            parent.children.append(self)  # type: ignore[union-attr, unused-ignore]
+
+        self.tree.elements[elem] = self
 
     def __iter__(self) -> Iterator[ChildNodeType]:
         if self.ref is None:
@@ -1445,9 +1452,10 @@ class SchemaElementNode(ElementNode):
             return self.obj.tag == name  # a schema
 
     @property
-    def attributes(self) -> List[AttributeNode]:
+    def attributes(self) -> list[AttributeNode]:
         if not hasattr(self, '_attributes'):
-            position = self.position + len(self.nsmap) + int('xml' not in self.nsmap)
+            nsmap = self.tree.namespaces
+            position = self.position + len(nsmap) + int('xml' not in nsmap) + 1
             self._attributes = [
                 SchemaAttributeNode(attr, self, pos)
                 for pos, (_, attr) in enumerate(self.obj.attrib.items(), position)
@@ -1485,7 +1493,7 @@ class SchemaElementNode(ElementNode):
     def iter(self) -> Iterator[XPathNode]:
         yield self
 
-        iterators: List[Any] = []
+        iterators: list[Any] = []
         children: Iterator[Any] = iter(self.children)
 
         if hasattr(self, '_namespace_nodes'):
@@ -1521,7 +1529,7 @@ class SchemaElementNode(ElementNode):
         if with_self:
             yield self
 
-        iterators: List[Any] = []
+        iterators: list[Any] = []
         children: Iterator[Any] = iter(self.children)
 
         elements = {self}
@@ -1556,11 +1564,10 @@ class DocumentNode(XPathNode):
     name: None
     obj: object
     parent: None
-    uri: Optional[str]
-    children: List[ChildNodeType]
-    elements: Dict[ElementProtocol, ElementNode]
+    children: list[ChildNodeType]
+    tree: XPathNodeTree
 
-    __slots__ = ('children', 'uri', 'elements')
+    __slots__ = ('children', 'tree')
 
     def __new__(cls, *args: Any, **kwargs: Any) -> 'DocumentNode':
         if cls is DocumentNode:
@@ -1570,7 +1577,7 @@ class DocumentNode(XPathNode):
     def __repr__(self) -> str:
         return '%s(document=%r)' % (self.__class__.__name__, self.document)
 
-    def __getitem__(self, i: Union[int, slice]) -> Union[ChildNodeType, List[ChildNodeType]]:
+    def __getitem__(self, i: Union[int, slice]) -> Union[ChildNodeType, list[ChildNodeType]]:
         return self.children[i]
 
     def __len__(self) -> int:
@@ -1585,6 +1592,14 @@ class DocumentNode(XPathNode):
     value = document
 
     @property
+    def uri(self) -> Optional[str]:
+        return self.tree.uri
+
+    @property
+    def elements(self) -> dict[object, TaggedNodeType]:
+        return self.tree.elements
+
+    @property
     def path(self) -> str:
         return '/'
 
@@ -1594,7 +1609,7 @@ class DocumentNode(XPathNode):
                 return child
         raise ElementPathRuntimeError("Missing document root")
 
-    def get_element_node(self, elem: ElementProtocol) -> Optional[ElementNode]:
+    def get_element_node(self, elem: ElementProtocol) -> Optional[TaggedNodeType]:
         return self.elements.get(elem)
 
     def iter(self) -> Iterator[XPathNode]:
@@ -1638,12 +1653,12 @@ class DocumentNode(XPathNode):
 
     def apply_schema(self, schema: 'AbstractSchemaProxy') -> None:
         for child in self.children:
-            if isinstance(child, EtreeElementNode):
+            if isinstance(child, ElementNode):
                 child.apply_schema(schema)
 
     def clear_types(self) -> None:
         for child in self.children:
-            if isinstance(child, EtreeElementNode):
+            if isinstance(child, ElementNode):
                 child.clear_types()
 
     @property
@@ -1702,12 +1717,11 @@ class EtreeDocumentNode(DocumentNode):
                  position: int = 1) -> None:
 
         self.obj = document
-        self.uri = uri
         self.name = None
         self.parent = None
         self.position = position
-        self.elements = {}
         self.children = []
+        self.tree = XPathNodeTree(self, uri=uri)
 
     @property
     def document(self) -> DocumentType:
@@ -1745,7 +1759,7 @@ class EtreeDocumentNode(DocumentNode):
 
 
 ###
-# Type annotation aliases
+# type annotation aliases
 XPathNodeType = Union[DocumentNode, NamespaceNode, AttributeNode, TextNode,
                       ElementNode, CommentNode, ProcessingInstructionNode]
 RootNodeType = Union[DocumentNode, ElementNode]

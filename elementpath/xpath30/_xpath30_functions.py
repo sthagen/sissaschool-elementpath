@@ -10,20 +10,20 @@
 """
 XPath 3.0 implementation - part 3 (functions)
 """
-import sys
 import decimal
 import os
 import re
 import codecs
 import math
+import zoneinfo
+from collections.abc import Iterator
 from copy import copy
 from itertools import zip_longest
-from typing import cast, Any, Dict, List, Optional, Tuple, Union, Type, Set
+from typing import cast, Any, Optional, Union
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 from urllib.error import URLError
 
-from elementpath._typing import Iterator
 from elementpath.aliases import Emptiable
 from elementpath.protocols import ElementProtocol
 from elementpath.exceptions import ElementPathError
@@ -32,9 +32,8 @@ from elementpath.helpers import OCCURRENCE_INDICATORS, Patterns, \
     is_xml_codepoint, node_position
 from elementpath.namespaces import get_expanded_name, split_expanded_name, \
     XPATH_FUNCTIONS_NAMESPACE, XSD_NAMESPACE
-from elementpath.datatypes import xsd10_atomic_types, NumericProxy, QName, Date10, \
-    DateTime10, Time, AnyURI, UntypedAtomic, AtomicType, NumericType, NMToken, \
-    Idref, Entity
+from elementpath.datatypes import NumericProxy, QName, Date10, DateTime10, Time, \
+    AnyURI, UntypedAtomic, AtomicType, NumericType, NMToken, Idref, Entity
 from elementpath.sequence_types import is_sequence_type, match_sequence_type
 from elementpath.etree import defuse_xml
 from elementpath.xpath_nodes import XPathNode, ElementNode, NamespaceNode, \
@@ -52,11 +51,6 @@ from .xpath30_helpers import UNICODE_DIGIT_PATTERN, DECIMAL_DIGIT_PATTERN, \
     MODIFIER_PATTERN, decimal_to_string, int_to_roman, int_to_alphabetic, \
     format_digits, int_to_words, parse_datetime_picture, parse_datetime_marker, \
     ordinal_suffix
-
-if sys.version_info < (3, 9):
-    zoneinfo = None
-else:
-    import zoneinfo
 
 FORMAT_INTEGER_TOKENS = {'A', 'a', 'i', 'I', 'w', 'W', 'Ww'}
 
@@ -81,10 +75,10 @@ class _InlineFunction(XPathFunction):
     body: Optional[XPathToken] = None
     "Body of anonymous inline function."
 
-    variables: Optional[Dict[str, Any]] = None
+    variables: Optional[dict[str, Any]] = None
     "In-scope variables linked by let and for expressions and arguments."
 
-    varnames: Optional[List[str]] = None
+    varnames: Optional[list[str]] = None
     "Inline function arguments varnames."
 
     def __str__(self) -> str:
@@ -172,7 +166,7 @@ class _InlineFunction(XPathFunction):
                     elif context.root is not None:
                         context.item = context.root
 
-                args = cast(Tuple[FunctionArgType], (context.item,))
+                args = cast(tuple[FunctionArgType], (context.item,))
 
             partial_function = False
             if self.variables is None:
@@ -293,7 +287,7 @@ class _InlineFunction(XPathFunction):
 
         return self
 
-    def evaluate(self, context: ContextType = None) -> Union[ItemType, List[ItemType]]:
+    def evaluate(self, context: ContextType = None) -> Union[ItemType, list[ItemType]]:
         if context is None:
             raise self.missing_context()
         elif self.label.endswith('function'):
@@ -316,7 +310,7 @@ class _InlineFunction(XPathFunction):
         nargs = len([tk and not tk for tk in self._items if tk.symbol == '?'])
         assert nargs, "a partial function requires at least a placeholder token"
 
-        self._name = None
+        self._name = None  # noqa
         self.label = 'inline partial function'
         self.nargs = nargs
 
@@ -843,7 +837,7 @@ function('format-time', nargs=(2, 5),
 @method('format-time')
 def evaluate_format_date_time_functions(self: XPathFunction, context: ContextType = None) \
         -> Emptiable[str]:
-    cls: Type[Union[DateTime10, Date10, Time]]
+    cls: type[Union[DateTime10, Date10, Time]]
     if self.symbol == 'format-dateTime':
         cls = DateTime10
         invalid_markers = ''
@@ -1128,7 +1122,7 @@ def select_innermost_function(self: XPathFunction, context: ContextType = None) 
 
     ancestors = {x for context.item in nodes for x in context.iter_ancestors(axis='ancestor')}
     results = {x for x in nodes if x not in ancestors}
-    yield from cast(List[XPathNode], sorted(results, key=node_position))
+    yield from cast(list[XPathNode], sorted(results, key=node_position))
 
 
 @method(function('outermost', nargs=1, sequence_types=('node()*', 'node()*')))
@@ -1139,7 +1133,7 @@ def select_outermost_function(self: XPathFunction, context: ContextType = None) 
 
     context = copy(context)
 
-    nodes: Union[List[ItemType], Set[ItemType]]
+    nodes: Union[list[ItemType], set[ItemType]]
     nodes = [e for e in self[0].select(context)]
     if any(not isinstance(x, XPathNode) for x in nodes):
         raise self.error('XPTY0004', 'argument must contain only nodes')
@@ -1155,7 +1149,7 @@ def select_outermost_function(self: XPathFunction, context: ContextType = None) 
             continue
         results.add(item)
 
-    yield from cast(List[XPathNode], sorted(results, key=node_position))
+    yield from cast(list[XPathNode], sorted(results, key=node_position))
 
 
 ##
@@ -1194,7 +1188,7 @@ def evaluate_generate_id_function(self: XPathFunction, context: ContextType = No
 @method(function('uri-collection', nargs=(0, 1),
                  sequence_types=('xs:string?', 'xs:anyURI*')))
 def evaluate_uri_collection_function(self: XPathFunction, context: ContextType = None) \
-        -> List[AnyURI]:
+        -> list[AnyURI]:
     if self.context is not None:
         context = self.context
 
@@ -1227,7 +1221,7 @@ def evaluate_uri_collection_function(self: XPathFunction, context: ContextType =
                 raise self.error('FODC0002', '{!r} collection not found'.format(uri)) from None
 
     if not match_sequence_type(resource_collection, 'xs:anyURI*', self.parser):
-        raise self.error('XPDY0050', "Type does not match sequence type xs:anyURI*")
+        raise self.error('XPDY0050', "type does not match sequence type xs:anyURI*")
 
     return resource_collection
 
@@ -1237,7 +1231,7 @@ def evaluate_uri_collection_function(self: XPathFunction, context: ContextType =
 @method(function('unparsed-text-lines', nargs=(1, 2),
                  sequence_types=('xs:string?', 'xs:string', 'xs:string*')))
 def evaluate_unparsed_text_functions(self: XPathFunction, context: ContextType = None) \
-        -> Union[Emptiable[str], List[str]]:
+        -> Union[Emptiable[str], list[str]]:
     if self.context is not None:
         context = self.context
 
@@ -1375,7 +1369,7 @@ def evaluate_environment_variable_function(self: XPathFunction, context: Context
 @method(function('available-environment-variables', nargs=0,
                  sequence_types=('xs:string*',)))
 def evaluate_available_environment_variables_function(
-        self: XPathFunction, context: ContextType = None) -> List[str]:
+        self: XPathFunction, context: ContextType = None) -> list[str]:
     if self.context is not None:
         context = self.context
     elif context is None:
@@ -1691,7 +1685,7 @@ def select_namespace_node_kind_test(self: XPathFunction, context: ContextType = 
     elif isinstance(context.item, ElementNode):
         elem = context.item
         for context.item in elem.namespace_nodes:
-            yield context.item
+            yield context.item  # noqa
 
 
 ###
@@ -1843,9 +1837,7 @@ def evaluate_round_function(self: XPathFunction, context: ContextType = None) \
 # XSD list-based constructors
 
 @XPath30Parser.constructor('NMTOKENS', sequence_types=('xs:NMTOKEN*',))
-def cast_nmtokens_list_type(self: XPathConstructor, value: AtomicType) \
-        -> List[NMToken]:
-    cast_func = xsd10_atomic_types['NMTOKEN']
+def cast_nmtokens_list_type(self: XPathConstructor, value: AtomicType) -> list[NMToken]:
     if isinstance(value, UntypedAtomic):
         values = value.value.split() or [value.value]
     elif hasattr(value, 'split'):
@@ -1854,15 +1846,13 @@ def cast_nmtokens_list_type(self: XPathConstructor, value: AtomicType) \
         raise self.error('FORG0001')
 
     try:
-        return [cast_func(x) for x in values]
+        return [NMToken(x) for x in values]
     except ValueError as err:
         raise self.error('FORG0001', err) from None
 
 
 @XPath30Parser.constructor('IDREFS', sequence_types=('xs:IDREF*',))
-def cast_idrefs_list_type(self: XPathConstructor, value: AtomicType) \
-        -> List[Idref]:
-    cast_func = xsd10_atomic_types['IDREF']
+def cast_idrefs_list_type(self: XPathConstructor, value: AtomicType) -> list[Idref]:
     if isinstance(value, UntypedAtomic):
         values = value.value.split() or [value.value]
     elif hasattr(value, 'split'):
@@ -1871,15 +1861,13 @@ def cast_idrefs_list_type(self: XPathConstructor, value: AtomicType) \
         raise self.error('FORG0001')
 
     try:
-        return [cast_func(x) for x in values]
+        return [Idref(x) for x in values]
     except ValueError as err:
         raise self.error('FORG0001', err) from None
 
 
 @XPath30Parser.constructor('ENTITIES', sequence_types=('xs:ENTITY*',))
-def cast_entities_list_type(self: XPathConstructor, value: AtomicType) \
-        -> List[Entity]:
-    cast_func = xsd10_atomic_types['ENTITY']
+def cast_entities_list_type(self: XPathConstructor, value: AtomicType) -> list[Entity]:
     if isinstance(value, UntypedAtomic):
         values = value.value.split() or [value.value]
     elif hasattr(value, 'split'):
@@ -1888,7 +1876,7 @@ def cast_entities_list_type(self: XPathConstructor, value: AtomicType) \
         raise self.error('FORG0001')
 
     try:
-        return [cast_func(x) for x in values]
+        return [Entity(x) for x in values]
     except ValueError as err:
         raise self.error('FORG0001', err) from None
 

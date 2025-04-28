@@ -56,6 +56,10 @@ class UnsupportedFeatureError(ElementPathError, NotImplementedError):
     """Raised when an XPath feature is not supported in the current context."""
 
 
+class XMLResourceForbidden(ElementPathError):
+    """Raised when the parsing of an XML resource is forbidden for safety reasons."""
+
+
 class ElementPathKeyError(ElementPathError, KeyError):
     pass
 
@@ -65,6 +69,10 @@ class ElementPathZeroDivisionError(ElementPathError, ZeroDivisionError):
 
 
 class ElementPathNameError(ElementPathError, NameError):
+    pass
+
+
+class ElementPathOSError(ElementPathError, OSError):
     pass
 
 
@@ -97,7 +105,7 @@ XPATH_ERROR_CODES = {
     'XPST0001': (ElementPathValueError, 'Parser not bound to a schema'),
     'XPST0003': (ElementPathSyntaxError, 'Invalid XPath expression'),
     'XPDY0002': (MissingContextError, 'Dynamic context required for evaluate'),
-    'XPTY0004': (ElementPathTypeError, 'Type is not appropriate for the context'),
+    'XPTY0004': (ElementPathTypeError, 'type is not appropriate for the context'),
     'XPST0005': (ElementPathValueError, 'A not empty sequence required'),
     'XPST0008': (ElementPathNameError, 'Name not found'),
     'XPST0010': (ElementPathNameError, 'Axis not found'),
@@ -106,7 +114,7 @@ XPATH_ERROR_CODES = {
                  'Step result contains both nodes and atomic values'),
     'XPTY0019': (ElementPathTypeError, 'Intermediate step contains an atomic value'),
     'XPTY0020': (ElementPathTypeError, 'Context item is not a node'),
-    'XPDY0050': (ElementPathTypeError, 'Type does not match sequence type'),
+    'XPDY0050': (ElementPathTypeError, 'type does not match sequence type'),
     'XPST0051': (ElementPathNameError, 'Unknown atomic type'),
     'XPST0080': (ElementPathNameError,
                  'Target type cannot be xs:NOTATION or xs:anyAtomicType'),
