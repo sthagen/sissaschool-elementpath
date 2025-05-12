@@ -47,6 +47,8 @@ TaggedNodeType = Union['ElementNode', 'CommentNode', 'ProcessingInstructionNode'
 ParentNodeType = Union['DocumentNode', 'ElementNode']
 ChildNodeType = Union['TextNode', TaggedNodeType]
 ElementMapType = dict[object, TaggedNodeType]
+FindAttrType = Optional[XsdAttributeProtocol]
+FindElemType = Optional[XsdElementProtocol]
 
 
 class XPathNodeTree:
@@ -244,9 +246,14 @@ class XPathNode:
         return None
 
     def apply_schema(self, schema: 'AbstractSchemaProxy') -> None:
-        """set XSD types for elements and attribute nodes from schema proxy instance."""
+        """Set XSD types for elements and attribute nodes from schema proxy instance."""
         if self.parent is not None:
             self.parent.apply_schema(schema)
+
+    def clear_types(self) -> None:
+        """Clear XSD types for elements and attribute nodes."""
+        if self.parent is not None:
+            self.parent.clear_types()
 
     def match_name(self, name: str, default_namespace: Optional[str] = None) -> bool:
         """
@@ -991,14 +998,14 @@ class ElementNode(XPathNode):
             -> Optional[TaggedNodeType]:
         return self.tree.elements.get(elem)
 
-    def get_document_node(self, replace: bool = True, as_parent: bool = True) -> 'DocumentNode':
+    def get_document_node(self, replace: bool = False, as_parent: bool = True) -> 'DocumentNode':
         """
         Returns a `DocumentNode` for the element node. If the element belongs to a tree that
         already has a document root, returns the document, otherwise creates a dummy document.
 
         :param replace: if `True` the root element of the tree is replaced by the \
         document node. This is usually useful for extended data models (more element \
-        children, text nodes).
+        children, text nodes). Default is `False`.
         :param as_parent: if `True` the root node/s of parent attribute is set with \
         the dummy document node, otherwise is set to `None`.
         """
@@ -1181,33 +1188,29 @@ class EtreeElementNode(ElementNode):
             for elem in self.iter_descendants(with_self=True):
                 if isinstance(elem, EtreeElementNode):
                     elem.xsd_type = element_type
-                    for attr in elem.attributes:
-                        attr.xsd_type = attribute_type
+                    if elem.obj.attrib:
+                        for attr in elem.attributes:
+                            attr.xsd_type = attribute_type
             return
 
-        if (xsd_element := schema.base_element) is not None:
-            paths = ['./']
+        if schema.base_element is not None:
+            xsd_types = [schema.base_element.type]
             children: Iterator[Any] = iter(self)
             if schema.is_assertion_based():
                 self.xsd_type = schema.get_type(XSD_ANY_TYPE)
             else:
-                self.xsd_type = xsd_element.type
+                self.xsd_type = schema.base_element.type
 
-            for attr in self.attributes:
-                if attr.name in xsd_element.attrib:
-                    attr.xsd_type = xsd_element.attrib[attr.name].type
-                else:
-                    xsd_attribute = schema.cached_find(f'./@{attr.name}')
-                    if xsd_attribute is not None and hasattr(xsd_attribute, 'type'):
-                        attr.xsd_type = xsd_attribute.type
-                    else:
-                        attr.xsd_type = None
+            if self.obj.attrib:
+                for attr in self.attributes:
+                    if isinstance(attr, TextAttributeNode):
+                        attr.xsd_type = schema.get_attribute_type(attr.name, xsd_types[-1])
         else:
             root_node: ParentNodeType = self
             while isinstance(root_node.parent, EtreeElementNode):
                 root_node = root_node.parent
 
-            paths = ['/']
+            xsd_types = [None]
             children = iter((root_node,))
 
         iterators: list[Any] = []
@@ -1215,44 +1218,37 @@ class EtreeElementNode(ElementNode):
             for elem in children:
                 if not isinstance(elem, EtreeElementNode):
                     continue
-
-                child_path = f'{paths[-1]}{elem.name}/'
-                if isinstance(xsi_type := elem.obj.attrib.get(XSI_TYPE), str):
-                    xsd_element = None
+                elif XSI_TYPE in elem.obj.attrib:
+                    xsi_type = cast(str, elem.obj.attrib[XSI_TYPE])
                     try:
                         type_name = get_expanded_name(xsi_type, elem.nsmap)
-                    except KeyError:
+                    except (KeyError, TypeError):
                         elem.clear_types()
                         continue
                     else:
-                        elem.xsd_type = schema.get_type(type_name)
+                        xsd_type = schema.get_type(type_name)
                 else:
-                    result = schema.cached_find(f'{paths[-1]}{elem.name}')
-                    if result is not None and hasattr(result, 'type'):
-                        elem.xsd_type = cast(XsdElementProtocol, result).type
-                    else:
-                        elem.clear_types()
-                        continue
+                    xsd_type = schema.get_child_type(elem.name, xsd_types[-1])
 
-                for attr in elem.attributes:
-                    if xsd_element is not None and attr.name in xsd_element.attrib:
-                        attr.xsd_type = xsd_element.attrib[attr.name].type
-                    else:
-                        xsd_attribute = schema.cached_find(f'{child_path}@{attr.name}')
-                        if xsd_attribute is not None and hasattr(xsd_attribute, 'type'):
-                            attr.xsd_type = xsd_attribute.type
-                        else:
-                            attr.xsd_type = None
+                if xsd_type is None:
+                    elem.clear_types()
+                    continue
+
+                elem.xsd_type = xsd_type
+                if elem.obj.attrib:
+                    for attr in elem.attributes:
+                        if isinstance(attr, TextAttributeNode):
+                            attr.xsd_type = schema.get_attribute_type(attr.name, xsd_type)
 
                 if len(elem.obj):
-                    paths.append(child_path)
+                    xsd_types.append(xsd_type)
                     iterators.append(children)
                     children = iter(elem)
                     break
             else:
                 try:
                     children = iterators.pop()
-                    paths.pop()
+                    xsd_types.pop()
                 except IndexError:
                     return
 
@@ -1280,7 +1276,7 @@ class EtreeElementNode(ElementNode):
         else:
             return self.obj.tag == f'{{{default_namespace}}}{name}'
 
-    def get_document_node(self, replace: bool = True, as_parent: bool = True) -> 'DocumentNode':
+    def get_document_node(self, replace: bool = False, as_parent: bool = True) -> 'DocumentNode':
         """
         Returns a `DocumentNode` for the element node. If the element belongs to a tree that
         already has a document root, returns the document, otherwise creates a dummy document
@@ -1288,7 +1284,7 @@ class EtreeElementNode(ElementNode):
 
         :param replace: if `True` the root element of the tree is replaced by the \
         document node. This is usually useful for extended data models (more element \
-        children, text nodes).
+        children, text nodes). Default is `False`.
         :param as_parent: if `True` the root node/s of parent attribute is set with \
         the dummy document node, otherwise is set to `None`.
         """
@@ -1395,7 +1391,7 @@ class SchemaElementNode(ElementNode):
                  position: int = 1,
                  nsmap: Union[NsmapType, NamespacesType, None] = None):
 
-        self.name = elem.tag
+        self.name = elem.name
         self.obj = elem
         self.parent = parent
         self.position = position

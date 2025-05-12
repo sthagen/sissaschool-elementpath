@@ -10,19 +10,20 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterator
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import cast, Any, Optional, Union
 
 from elementpath.exceptions import ElementPathTypeError
 from elementpath.protocols import XsdTypeProtocol, XsdAttributeProtocol, \
-    XsdElementProtocol, XsdSchemaProtocol
+    XsdElementProtocol, XsdSchemaProtocol, XsdAttributeGroupProtocol
+from elementpath.namespaces import XSD_ANY_ATOMIC_TYPE
 from elementpath.datatypes import AtomicType
 from elementpath.etree import is_etree_element
 from elementpath.xpath_context import XPathSchemaContext
-
-if TYPE_CHECKING:
-    from elementpath.xpath_tokens import XPath2ParserType
+from elementpath.xpath_tokens import XPath2ParserType
 
 PathResult = Union[XsdSchemaProtocol, XsdElementProtocol, XsdAttributeProtocol]
+FindAttrType = Optional[XsdAttributeProtocol]
+FindElemType = Optional[XsdElementProtocol]
 
 
 class AbstractSchemaProxy(metaclass=ABCMeta):
@@ -33,7 +34,7 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
     :param schema: a schema instance compatible with the XsdSchemaProtocol.
     :param base_element: the schema element used as base item for static analysis.
     """
-    __slots__ = ('_schema', '_base_element', '_find', '_is_fully_valid')
+    __slots__ = ('_schema', '_base_element', '_is_fully_valid')
 
     def __init__(self, schema: XsdSchemaProtocol,
                  base_element: Optional[XsdElementProtocol] = None) -> None:
@@ -48,12 +49,6 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
 
         self._schema = schema
         self._base_element: Optional[XsdElementProtocol] = base_element
-
-        if self._base_element is not None:
-            self._find = self._base_element.find
-        else:
-            self._find = self._schema.find
-
         self._is_fully_valid = False
 
     @property
@@ -109,24 +104,26 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
     def find(self, path: str, namespaces: Optional[dict[str, str]] = None) \
             -> Optional[PathResult]:
         """
-        Find a schema element or attribute using an XPath expression.
+        Find a schema element or attribute using an XPath expression. Currently unused
+        in the code, it may be deprecated in the future.
 
         :param path: an XPath expression that selects an element or an attribute node.
         :param namespaces: an optional mapping from namespace prefix to namespace URI.
         :return: The first matching schema component, or ``None`` if there is no match.
         """
-        return self._find(path, namespaces)
+        if self._base_element is not None:
+            return self._base_element.find(path, namespaces=namespaces)
+        return self._schema.find(path, namespaces)
 
     @lru_cache(maxsize=None)
     def cached_find(self, expanded_path: str) -> Optional[PathResult]:
         """
-        Find a schema element or attribute using an expanded path as XPath expression.
-
-        :param expanded_path: an XPath expression with qualified names already resolved \
-        to expanded form.
-        :return: The first matching schema component, or ``None`` if there is no match.
+        Find a schema element or attribute using an expanded XPath expression.
+        Currently unused in the code, it may be deprecated in the future.
         """
-        return self._find(expanded_path)
+        if self._base_element is not None:
+            return self._base_element.find(expanded_path)
+        return self._schema.find(expanded_path)
 
     @property
     def xsd_version(self) -> str:
@@ -139,57 +136,97 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
 
     def get_type(self, qname: str) -> Optional[XsdTypeProtocol]:
         """
-        Get the XSD global type from the schema's scope. A concrete implementation must
-        return an object that supports the protocols `XsdTypeProtocol`, or `None` if
-        the global type is not found.
+        Get the XSD global type from the schema's scope.
 
         :param qname: the fully qualified name of the type to retrieve.
         :returns: an object that represents an XSD type or `None`.
         """
-        xsd_type = self._schema.maps.types.get(qname)
-        if isinstance(xsd_type, tuple):
-            return None
-        return xsd_type
+        return self._schema.maps.types.get(qname)
 
     def get_attribute(self, qname: str) -> Optional[XsdAttributeProtocol]:
         """
-        Get the XSD global attribute from the schema's scope. A concrete implementation must
-        return an object that supports the protocol `XsdAttributeProtocol`, or `None` if
-        the global attribute is not found.
+        Get the XSD global attribute from the schema's scope.
 
         :param qname: the fully qualified name of the attribute to retrieve.
-        :returns: an object that represents an XSD attribute or `None`.
+        :returns: an object that represents an XSD type or `None`.
         """
-        xsd_attribute = self._schema.maps.attributes.get(qname)
-        if isinstance(xsd_attribute, tuple):
-            return None
-        return xsd_attribute
+        return self._schema.maps.attributes.get(qname)
 
     def get_element(self, qname: str) -> Optional[XsdElementProtocol]:
         """
-        Get the XSD global element from the schema's scope. A concrete implementation must
-        return an object that supports the protocol `XsdElementProtocol` interface, or
-        `None` if the global element is not found.
+        Get the XSD global element from the schema's scope.
 
         :param qname: the fully qualified name of the element to retrieve.
-        :returns: an object that represents an XSD element or `None`.
+        :returns: an object that represents an XSD type or `None`.
         """
-        xsd_element = self._schema.maps.elements.get(qname)
-        if isinstance(xsd_element, tuple):
-            return None
-        return xsd_element
+        return self._schema.maps.elements.get(qname)
 
     def get_substitution_group(self, qname: str) -> Optional[set[XsdElementProtocol]]:
         """
-        Get a substitution group. A concrete implementation must return a list containing
-        substitution elements or `None` if the substitution group is not found. Moreover,
-        each item of the returned list must be an object that implements the
-        `AbstractXsdElement` interface.
+        Get a substitution group. Currently unused in the code, it may be deprecated
+        in the future.
 
         :param qname: the fully qualified name of the substitution group to retrieve.
         :returns: a list containing substitution elements or `None`.
         """
         return self._schema.maps.substitution_groups.get(qname)
+
+    def get_attribute_type(self, name: str, parent_type: Optional[XsdTypeProtocol] = None) \
+            -> Optional[XsdTypeProtocol]:
+        """
+        Get the XSD attribute type if the provided name is matching in the scope,
+        otherwise return None.
+
+        :param name: the name of the attribute to retrieve.
+        :param parent_type: an optional XSD type that represents the scope where matching \
+        the attribute name. If not provided, the scope is assumed to be the global scope.
+        """
+        if parent_type is None:
+            try:
+                return self._schema.maps.attributes[name].type
+            except KeyError:
+                return None
+        elif hasattr(parent_type, 'attributes'):
+            attributes = cast(XsdAttributeGroupProtocol, parent_type.attributes)
+            if name in attributes:
+                return attributes[name].type
+            elif None in attributes and attributes[None].is_matching(name):
+                try:
+                    return self._schema.maps.attributes[name].type
+                except KeyError:
+                    return None
+            elif name.startswith('{http://www.w3.org/2001/XMLSchema-instance}'):
+                return self._schema.maps.types.get(XSD_ANY_ATOMIC_TYPE)
+
+        return None
+
+    def get_child_type(self, name: str, parent_type: Optional[XsdTypeProtocol] = None) \
+            -> Optional[XsdTypeProtocol]:
+        """
+        Get the child XSD type if the provided name is matching in the scope,
+        otherwise return None.
+
+        :param name: the name of the child element to match.
+        :param parent_type: an optional XSD type that represents the scope where matching \
+        the child element name. If `None` or not provided the scope is the schema.
+        """
+        if parent_type is None:
+            try:
+                return self._schema.maps.elements[name].type
+            except KeyError:
+                return None
+        elif (content := parent_type.model_group) is not None:
+            for xsd_element in content.iter_elements():
+                if xsd_element.is_matching(name):
+                    if xsd_element.name == name:
+                        return xsd_element.type
+                    else:
+                        # a wildcard or a substitute
+                        try:
+                            return self._schema.maps.elements[name].type
+                        except KeyError:
+                            return None
+        return None
 
     @abstractmethod
     def is_instance(self, obj: Any, type_qname: str) -> bool:
