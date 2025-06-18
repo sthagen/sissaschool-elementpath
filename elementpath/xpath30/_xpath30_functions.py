@@ -25,7 +25,6 @@ from urllib.request import urlopen
 from urllib.error import URLError
 
 from elementpath.aliases import Emptiable
-from elementpath.protocols import ElementProtocol
 from elementpath.exceptions import ElementPathError
 from elementpath.tdop import MultiLabel
 from elementpath.helpers import OCCURRENCE_INDICATORS, Patterns, \
@@ -660,7 +659,7 @@ def evaluate_format_number_function(self: XPathFunction, context: ContextType = 
 
     minus_sign = decimal_format['minus-sign']
 
-    prefix = ''
+    prefix: str = ''
     if value >= 0:
         subpic = sub_pictures[0]
     else:
@@ -683,7 +682,8 @@ def evaluate_format_number_function(self: XPathFunction, context: ContextType = 
         suffix = percent_sign
         subpic = subpic[:-1]
 
-        if value.as_tuple().exponent < 0:
+        exponent = value.as_tuple().exponent
+        if isinstance(exponent, int) and exponent < 0:
             value *= 100
         else:
             value = decimal.Decimal(int(value) * 100)
@@ -692,7 +692,8 @@ def evaluate_format_number_function(self: XPathFunction, context: ContextType = 
         suffix = per_mille_sign
         subpic = subpic[:-1]
 
-        if value.as_tuple().exponent < 0:
+        exponent = value.as_tuple().exponent
+        if isinstance(exponent, int) and exponent < 0:
             value *= 1000
         else:
             value = decimal.Decimal(int(value) * 1000)
@@ -931,7 +932,7 @@ def evaluate_format_date_time_functions(self: XPathFunction, context: ContextTyp
                  sequence_types=('xs:string?', 'xs:string', 'xs:string',
                                  'element(fn:analyze-string-result)')))
 def evaluate_analyze_string_function(self: XPathFunction, context: ContextType = None) \
-        -> ElementProtocol:
+        -> ElementNode:
     if self.context is not None:
         context = self.context
 
@@ -1055,7 +1056,7 @@ def evaluate_analyze_string_function(self: XPathFunction, context: ContextType =
     else:
         root = context.etree.XML(''.join(lines))
 
-    return cast(ElementProtocol, get_node_tree(root=root, namespaces=self.parser.namespaces))
+    return cast(ElementNode, get_node_tree(root=root, namespaces=self.parser.namespaces))
 
 
 ###
@@ -1760,6 +1761,9 @@ def evaluate_node_name_function(self: XPathFunction, context: ContextType = None
         elif name.startswith('{'):
             # name is a QName in extended format
             namespace, local_name = split_expanded_name(name)
+            if not namespace:
+                return QName('', local_name)
+
             for pfx, uri in self.parser.namespaces.items():
                 if uri == namespace:
                     if not pfx:
