@@ -10,12 +10,11 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterator
 from functools import lru_cache
-from typing import cast, Any, Optional, Union
+from typing import Any, Optional, Union
 
 from elementpath.exceptions import ElementPathTypeError
 from elementpath.protocols import XsdTypeProtocol, XsdAttributeProtocol, \
-    XsdElementProtocol, XsdSchemaProtocol, XsdAttributeGroupProtocol
-from elementpath.namespaces import XSD_ANY_ATOMIC_TYPE
+    XsdElementProtocol, XsdSchemaProtocol
 from elementpath.datatypes import AtomicType
 from elementpath.etree import is_etree_element
 from elementpath.xpath_context import XPathSchemaContext
@@ -148,16 +147,14 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
         Get the XSD global attribute from the schema's scope.
 
         :param qname: the fully qualified name of the attribute to retrieve.
-        :returns: an object that represents an XSD type or `None`.
         """
         return self._schema.maps.attributes.get(qname)
 
-    def get_element(self, qname: str) -> Optional[XsdElementProtocol]:
+    def get_element(self, qname: str,) -> Optional[XsdElementProtocol]:
         """
         Get the XSD global element from the schema's scope.
 
-        :param qname: the fully qualified name of the element to retrieve.
-        :returns: an object that represents an XSD type or `None`.
+        :param qname: the fully qualified name of the attribute to retrieve.
         """
         return self._schema.maps.elements.get(qname)
 
@@ -170,63 +167,6 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
         :returns: a list containing substitution elements or `None`.
         """
         return self._schema.maps.substitution_groups.get(qname)
-
-    def get_attribute_type(self, name: str, parent_type: Optional[XsdTypeProtocol] = None) \
-            -> Optional[XsdTypeProtocol]:
-        """
-        Get the XSD attribute type if the provided name is matching in the scope,
-        otherwise return None.
-
-        :param name: the name of the attribute to retrieve.
-        :param parent_type: an optional XSD type that represents the scope where matching \
-        the attribute name. If not provided, the scope is assumed to be the global scope.
-        """
-        if parent_type is None:
-            try:
-                return self._schema.maps.attributes[name].type
-            except KeyError:
-                return None
-        elif hasattr(parent_type, 'attributes'):
-            attributes = cast(XsdAttributeGroupProtocol, parent_type.attributes)
-            if name in attributes:
-                return attributes[name].type
-            elif None in attributes and attributes[None].is_matching(name):
-                try:
-                    return self._schema.maps.attributes[name].type
-                except KeyError:
-                    return None
-            elif name.startswith('{http://www.w3.org/2001/XMLSchema-instance}'):
-                return self._schema.maps.types.get(XSD_ANY_ATOMIC_TYPE)
-
-        return None
-
-    def get_child_type(self, name: str, parent_type: Optional[XsdTypeProtocol] = None) \
-            -> Optional[XsdTypeProtocol]:
-        """
-        Get the child XSD type if the provided name is matching in the scope,
-        otherwise return None.
-
-        :param name: the name of the child element to match.
-        :param parent_type: an optional XSD type that represents the scope where matching \
-        the child element name. If `None` or not provided the scope is the schema.
-        """
-        if parent_type is None:
-            try:
-                return self._schema.maps.elements[name].type
-            except KeyError:
-                return None
-        elif (content := parent_type.model_group) is not None:
-            for xsd_element in content.iter_elements():
-                if xsd_element.is_matching(name):
-                    if xsd_element.name == name:
-                        return xsd_element.type
-                    else:
-                        # a wildcard or a substitute
-                        try:
-                            return self._schema.maps.elements[name].type
-                        except KeyError:
-                            return None
-        return None
 
     @abstractmethod
     def is_instance(self, obj: Any, type_qname: str) -> bool:
