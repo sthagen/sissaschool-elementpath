@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -7,36 +7,37 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-from decimal import Decimal
 from urllib.parse import urlparse
 from typing import Union
 
 from elementpath.helpers import collapse_white_spaces, Patterns
-from .atomic_types import AnyAtomicType
+from .any_types import AnyAtomicType
 from .untyped import UntypedAtomic
-from .numeric import Integer
+
+__all__ = ['AnyURI']
 
 
 class AnyURI(AnyAtomicType):
-    """
-    Class for xs:anyURI data.
-
-    :param value: a string or an untyped atomic instance.
-    """
     value: str
     name = 'anyURI'
 
+    __slots__ = ('value',)
+
     def __init__(self, value: Union[str, bytes, UntypedAtomic, 'AnyURI']) -> None:
-        if isinstance(value, str):
-            self.value = collapse_white_spaces(value)
-        elif isinstance(value, bytes):
-            self.value = collapse_white_spaces(value.decode('utf-8'))
-        elif isinstance(value, self.__class__):
-            self.value = value.value
-        elif isinstance(value, UntypedAtomic):
-            self.value = collapse_white_spaces(value.value)
-        else:
-            raise TypeError('the argument has an invalid type %r' % type(value))
+        """
+        :param value: string or an untyped atomic that represents a valid URI.
+        """
+        match value:
+            case str():
+                self.value = collapse_white_spaces(value)
+            case bytes():
+                self.value = collapse_white_spaces(value.decode('utf-8'))
+            case UntypedAtomic():
+                self.value = collapse_white_spaces(value.value)
+            case AnyURI():
+                self.value = value.value
+            case _:
+                raise TypeError('the argument has an invalid type %r' % type(value))
 
         self.validate(self.value)
 
@@ -58,16 +59,16 @@ class AnyURI(AnyAtomicType):
     def __eq__(self, other: object) -> bool:
         if isinstance(other, (AnyURI, UntypedAtomic)):
             return self.value == other.value
-        elif isinstance(other, (bool, float, Decimal, Integer)):
-            raise TypeError("cannot compare {} with xs:{}".format(type(other), self.name))
-        return self.value == other
+        elif isinstance(other, str):
+            return self.value == other
+        return NotImplemented
 
     def __ne__(self, other: object) -> bool:
         if isinstance(other, (AnyURI, UntypedAtomic)):
             return self.value != other.value
-        elif isinstance(other, (bool, float, Decimal, Integer)):
-            raise TypeError("cannot compare {} with xs:{}".format(type(other), self.name))
-        return self.value != other
+        elif isinstance(other, str):
+            return self.value != other
+        return NotImplemented
 
     def __lt__(self, other: Union[str, 'AnyURI', UntypedAtomic]) -> bool:
         if isinstance(other, (AnyURI, UntypedAtomic)):
@@ -96,7 +97,7 @@ class AnyURI(AnyAtomicType):
         elif isinstance(value, bytes):
             value = value.decode()
         elif not isinstance(value, str):
-            raise cls.invalid_type(value)
+            raise cls._invalid_type(value)
 
         try:
             url_parts = urlparse(value)
@@ -106,7 +107,7 @@ class AnyURI(AnyAtomicType):
             raise ValueError(msg.format(value, cls.name, str(err))) from None
         else:
             if url_parts.path.startswith(':'):
-                raise cls.invalid_value(value)
+                raise cls._invalid_value(value)
             elif value.count('#') > 1:
                 msg = 'invalid value {!r} for xs:{} (too many # characters)'
                 raise ValueError(msg.format(value, cls.name))

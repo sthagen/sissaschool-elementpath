@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -53,6 +53,7 @@ XSD_STRING = '{%s}string' % XSD_NAMESPACE
 XSD_FLOAT = '{%s}float' % XSD_NAMESPACE
 XSD_DOUBLE = '{%s}double' % XSD_NAMESPACE
 XSD_DECIMAL = '{%s}decimal' % XSD_NAMESPACE
+XSD_DATETIME_STAMP = '{%s}dateTimeStamp' % XSD_NAMESPACE
 
 # XPath type labels defined in XSD namespace that are not XSD builtin types
 XSD_UNTYPED = '{%s}untyped' % XSD_NAMESPACE

@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -12,8 +12,7 @@ XPath 3.1 implementation
 """
 from typing import ClassVar
 
-from elementpath.namespaces import XPATH_MAP_FUNCTIONS_NAMESPACE, \
-    XPATH_ARRAY_FUNCTIONS_NAMESPACE  # , XSLT_XQUERY_SERIALIZATION_NAMESPACE
+import elementpath.namespaces as ns
 from elementpath.datatypes import QName
 from elementpath.xpath30 import XPath30Parser
 
@@ -25,8 +24,8 @@ class XPath31Parser(XPath30Parser):
     version = '3.1'
 
     DEFAULT_NAMESPACES: ClassVar[dict[str, str]] = {
-        'map': XPATH_MAP_FUNCTIONS_NAMESPACE,
-        'array': XPATH_ARRAY_FUNCTIONS_NAMESPACE,
+        'map': ns.XPATH_MAP_FUNCTIONS_NAMESPACE,
+        'array': ns.XPATH_ARRAY_FUNCTIONS_NAMESPACE,
         **XPath30Parser.DEFAULT_NAMESPACES
     }
 

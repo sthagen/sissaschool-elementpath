@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -28,13 +28,13 @@ from textwrap import dedent
 import xml.etree.ElementTree as ET
 
 from elementpath import XPath2Parser, XPathContext, XPathSchemaContext, \
-    MissingContextError, ElementNode, select, iter_select, get_node_tree
-from elementpath.datatypes import xsd_atomic_types, DateTime, Date, Date10, \
+    MissingContextError, ElementNode, select, iter_select, get_node_tree, XPathFunction
+from elementpath.datatypes import builtin_atomic_types, DateTime, Date, Date10, \
     Time, Timezone, DayTimeDuration, YearMonthDuration, UntypedAtomic, QName
 from elementpath.namespaces import XPATH_FUNCTIONS_NAMESPACE
 from elementpath.collations import get_locale_category
 from elementpath.sequence_types import is_instance
-from elementpath.xpath_tokens import ProxyToken, XPathFunction
+from elementpath.xpath_tokens import ProxyToken
 
 try:
     from tests import test_xpath1_parser
@@ -82,15 +82,16 @@ def get_sequence_type(value, xsd_version='1.0'):
             return 'xs:QName'
 
         if xsd_version == '1.1':
-            if xsd_atomic_types['1.1']['dateTimeStamp'].is_valid(value):
+            if builtin_atomic_types['xs:dateTimeStamp'].is_valid(value):
                 return 'xs:dateTimeStamp'
 
-        for type_name in ['string', 'boolean', 'decimal', 'float', 'double',
-                          'date', 'dateTime', 'gDay', 'gMonth', 'gMonthDay', 'anyURI',
-                          'gYear', 'gYearMonth', 'time', 'duration', 'dayTimeDuration',
-                          'yearMonthDuration', 'base64Binary', 'hexBinary']:
-            if xsd_atomic_types[xsd_version][type_name].is_valid(value):
-                return 'xs:%s' % type_name
+        for st in ['xs:string', 'xs:boolean', 'xs:decimal', 'xs:float', 'xs:double',
+                   'xs:date', 'xs:dateTime', 'xs:gDay', 'xs:gMonth', 'xs:gMonthDay',
+                   'xs:anyURI', 'xs:gYear', 'xs:gYearMonth', 'xs:time', 'xs:duration',
+                   'xs:dayTimeDuration', 'xs:yearMonthDuration', 'xs:base64Binary',
+                   'xs:hexBinary']:
+            if builtin_atomic_types[st].is_valid(value):
+                return st
 
     raise ValueError("Inconsistent sequence type for {!r}".format(value))
 
@@ -138,7 +139,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.assertEqual(
             repr(token), f"<{token.__class__.__name__} object at {hex(id(token))}>"
         )
-        self.assertEqual(str(token), '$var1 variable reference')
+        self.assertEqual(str(token), '$var1 variable')
 
         context = XPathContext(root=root, variables={'var1': root[0]})
         self.check_value('$var1', context.root[0], context=context)
@@ -595,7 +596,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
         context = XPathSchemaContext(schema)
         token = self.parser.parse('/namespace::*')
-        self.assertListEqual(token.evaluate(context), [])
+        self.assertEqual(token.evaluate(context), [])
 
     def test_unknown_axis(self):
         self.wrong_syntax('unknown::node()', 'XPST0003')
@@ -1435,7 +1436,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         )
         self.assertEqual(fn_select_first.nargs, 1)
 
-        xml_data = '<container>\n  <test/>\n  <test/></container>'
+        xml_data = '<container>\n  <test a="1"/>\n  <test/></container>'
         root = self.etree.XML(xml_data)
 
         expression = "tst:select-first(//test)"
@@ -1503,8 +1504,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         context = XPathContext(root_node, item=date_node)
         result = token.get_results(context)
 
-        assert len(result) == 1
-        assert result[-1] == Date10(2018, 1, 23)
+        assert result == [Date10(2018, 1, 23)]
 
     def test_proxy_token_disambiguation__issue_078(self):
         root = self.etree.XML(dedent('''\

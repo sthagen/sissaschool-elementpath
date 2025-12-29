@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (c), 2022, SISSA (International School for Advanced Studies).
+# Copyright (c), 2022-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -23,7 +23,7 @@ from elementpath.sequence_types import normalize_sequence_type, is_instance, \
 from elementpath import XPath2Parser, XPathContext
 from elementpath.xpath3 import XPath30Parser, XPath31Parser
 from elementpath.namespaces import XSD_NAMESPACE, XSD_UNTYPED_ATOMIC, \
-    XSD_ANY_ATOMIC_TYPE, XSD_ANY_SIMPLE_TYPE, XSI_NIL, XSD_STRING
+    XSD_ANY_ATOMIC_TYPE, XSD_ANY_SIMPLE_TYPE, XSI_NIL, XSD_STRING, XSD_ANY_TYPE
 from elementpath.datatypes import UntypedAtomic
 from elementpath.xpath_nodes import CommentNode
 
@@ -69,7 +69,7 @@ class SequenceTypesTest(unittest.TestCase):
         self.assertFalse(is_sequence_type_restriction('element()', 'node()'))
         self.assertTrue(is_sequence_type_restriction('xs:anyAtomicType', 'xs:string'))
         self.assertFalse(is_sequence_type_restriction('xs:anyAtomicType', 'xs:unknown'))
-        self.assertTrue(is_sequence_type_restriction('xs:string', 'xs:anyAtomicType'))
+        self.assertFalse(is_sequence_type_restriction('xs:string', 'xs:anyAtomicType'))
         self.assertTrue(is_sequence_type_restriction('xs:string', 'xs:token'))
         self.assertFalse(is_sequence_type_restriction('xs:string', 'xs:int'))
         self.assertFalse(is_sequence_type_restriction('xs:string', 'xs:unknown'))
@@ -95,9 +95,10 @@ class SequenceTypesTest(unittest.TestCase):
         self.assertTrue(is_instance(UntypedAtomic(1), XSD_UNTYPED_ATOMIC))
         self.assertFalse(is_instance(1, XSD_UNTYPED_ATOMIC))
         self.assertTrue(is_instance(1, XSD_ANY_ATOMIC_TYPE))
-        self.assertFalse(is_instance([1], XSD_ANY_ATOMIC_TYPE))
-        self.assertTrue(is_instance(1, XSD_ANY_SIMPLE_TYPE))
-        self.assertTrue(is_instance([1], XSD_ANY_SIMPLE_TYPE))
+        self.assertTrue(is_instance([1], XSD_ANY_ATOMIC_TYPE))
+
+        self.assertRaises(KeyError, is_instance, object(), XSD_ANY_TYPE)
+        self.assertRaises(KeyError, is_instance, [1], XSD_ANY_SIMPLE_TYPE)
 
         self.assertTrue(is_instance('foo', '{%s}string' % XSD_NAMESPACE))
         self.assertFalse(is_instance(1, '{%s}string' % XSD_NAMESPACE))
@@ -114,8 +115,8 @@ class SequenceTypesTest(unittest.TestCase):
         self.assertRaises(KeyError, is_instance, 'foo', 'tst:unknown')
         self.assertRaises(KeyError, is_instance, 'foo', 'tst:unknown', parser)
 
-        self.assertTrue(is_instance(None, '{%s}error' % XSD_NAMESPACE))
-        self.assertTrue(is_instance([], '{%s}error' % XSD_NAMESPACE))
+        self.assertFalse(is_instance(None, '{%s}error' % XSD_NAMESPACE))
+        self.assertFalse(is_instance([], '{%s}error' % XSD_NAMESPACE))
         self.assertFalse(is_instance(1.0, '{%s}error' % XSD_NAMESPACE))
 
         self.assertTrue(is_instance(1.0, '{%s}numeric' % XSD_NAMESPACE))
@@ -130,7 +131,7 @@ class SequenceTypesTest(unittest.TestCase):
         self.assertTrue(is_sequence_type('item()?'))
         self.assertTrue(is_sequence_type('xs:untypedAtomic+'))
 
-        self.assertFalse(is_sequence_type(10))
+        self.assertRaises(TypeError, is_sequence_type, 10)
         self.assertFalse(is_sequence_type(''))
         self.assertFalse(is_sequence_type('empty-sequence()*'))
         self.assertFalse(is_sequence_type('unknown'))

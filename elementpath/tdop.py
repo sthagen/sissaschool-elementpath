@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -16,7 +16,7 @@ from abc import ABCMeta
 from collections.abc import Callable, Iterator, MutableMapping, MutableSequence
 from unicodedata import name as unicode_name
 from decimal import Decimal, DecimalException
-from typing import Any, cast, overload, Generic, Optional, Union, TypeVar
+from typing import Any, cast, overload, Generic, TypeVar
 
 #
 # Simple top-down parser based on Vaughan Pratt's algorithm (Top Down Operator Precedence).
@@ -144,7 +144,7 @@ class Token(MutableSequence[TK]):
     :cvar label: defines the typology of the token class. Its value is used in \
     representations of the token instance and can be used to restrict code choices \
     without more complicated analysis. The label value can be set as needed by the \
-    parser implementation (eg. 'function', 'axis', 'constructor function' are used by \
+    parser implementation (e.g. 'function', 'axis', 'constructor function' are used by \
     the XPath parsers). In the base parser class defaults to 'symbol' with 'literal' \
     and 'operator' as possible alternatives. If set by a tuple of values the token \
     class label is transformed to a multi-value label, that means the token class can \
@@ -155,18 +155,17 @@ class Token(MutableSequence[TK]):
     rbp: int = 0           # right binding power
     symbol: str = ''       # the token identifier
     lookup_name: str = ''  # the key in symbol table, usually matches the symbol.
-    label: Union[str, MultiLabel] = 'symbol'  # the label, that usually means a class of tokens.
-    pattern: Optional[str] = None  # a custom regex pattern for building the tokenizer
+    label: str | MultiLabel = 'symbol'  # the label, that usually means a group of token types.
+    pattern: str | None = None  # a custom regex pattern for building the tokenizer
 
-    __slots__ = '_items', 'parser', 'value', 'span'
+    __slots__ = '_items', 'parser', 'value', 'span', '__dict__'
 
     _items: list[TK]
     parser: 'Parser[TK]'
     value: Any
     span: tuple[int, int]
 
-    def __init__(self, parser: 'Parser[TK]',
-                 value: Optional[Any] = None) -> None:
+    def __init__(self, parser: 'Parser[TK]', value: Any | None = None) -> None:
         self._items = []
         self.parser = parser
         self.value = value if value is not None else self.symbol
@@ -178,18 +177,20 @@ class Token(MutableSequence[TK]):
     @overload
     def __getitem__(self, s: slice) -> MutableSequence[TK]: ...  # pragma: no cover
 
-    def __getitem__(self, i: Union[int, slice]) \
-            -> Union[TK, MutableSequence[TK]]:
+    def __getitem__(self, i: int | slice) -> TK | MutableSequence[TK]:
         return self._items[i]
 
-    def __setitem__(self, i: Union[int, slice], o: Any) -> None:
+    def __setitem__(self, i: int | slice, o: Any) -> None:
         self._items[i] = o
 
-    def __delitem__(self, i: Union[int, slice]) -> None:
+    def __delitem__(self, i: int | slice) -> None:
         del self._items[i]
 
     def __len__(self) -> int:
         return len(self._items)
+
+    def __iter__(self) -> Iterator[TK]:
+        return iter(self._items)
 
     def insert(self, i: int, item: TK) -> None:
         self._items.insert(i, item)
@@ -319,8 +320,8 @@ class Token(MutableSequence[TK]):
 
     def iter(self: TK, *symbols: str) -> Iterator[TK]:
         """Returns a generator for iterating the token's tree."""
-        status: list[tuple[Optional[TK], Iterator[TK]]] = []
-        parent: Optional[TK] = self
+        status: list[tuple[TK | None, Iterator[TK]]] = []
+        parent: TK | None = self
         children: Iterator[TK] = iter(self)
         tk: TK
 
@@ -356,15 +357,15 @@ class Token(MutableSequence[TK]):
                             yield parent
                         parent = None
 
-    def expected(self, *symbols: str, message: Optional[str] = None) -> None:
+    def expected(self, *symbols: str, message: str | None = None) -> None:
         if symbols and self.symbol not in symbols:
             raise self.wrong_syntax(message)
 
-    def unexpected(self, *symbols: str, message: Optional[str] = None) -> None:
+    def unexpected(self, *symbols: str, message: str | None = None) -> None:
         if not symbols or self.symbol in symbols:
             raise self.wrong_syntax(message)
 
-    def wrong_syntax(self, message: Optional[str] = None) -> ParseError:
+    def wrong_syntax(self, message: str | None = None) -> ParseError:
         if message:
             return ParseError(message)
         elif self.symbol not in SPECIAL_SYMBOLS:
@@ -394,7 +395,7 @@ class ParserMeta(ABCMeta):
     token_base_class: type[Any]
     literals_pattern: re.Pattern[str]
     name_pattern: re.Pattern[str]
-    tokenizer: Optional[re.Pattern[str]]
+    tokenizer: re.Pattern[str] | None
     symbol_table: MutableMapping[str, type[Any]]
 
     def __new__(mcs, name: str, bases: tuple[type[Any], ...], namespace: dict[str, Any]) \
@@ -435,12 +436,12 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
     """
     Parser class for implementing a Top-Down Operator Precedence parser.
 
-    :cvar symbol_table: a dictionary that stores the token classes defined for the language.
+    :cvar   symbol_table: a dictionary that stores the token classes defined for the language.
     :cvar token_base_class: the base class for creating language's token classes.
     :cvar tokenizer: the language tokenizer compiled regexp.
     """
     token_base_class = Token
-    tokenizer: Optional[re.Pattern[str]] = None
+    tokenizer: re.Pattern[str] | None = None
     symbol_table: dict[str, type[TK_co]] = {}
 
     _start_token: TK_co
@@ -448,7 +449,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
     tokens: Iterator[re.Match[str]]
     token: TK_co
     next_token: TK_co
-    next_match: Optional[re.Match[str]]
+    next_match: re.Match[str] | None
     literals_pattern: re.Pattern[str]
     name_pattern: re.Pattern[str]
 
@@ -500,7 +501,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             self.next_match = None
             self.token = self.next_token = self._start_token
 
-    def advance(self, *symbols: str, message: Optional[str] = None) -> TK_co:
+    def advance(self, *symbols: str, message: str | None = None) -> TK_co:
         """
         The Pratt's function for advancing to next token.
 
@@ -661,7 +662,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         return string_literal[1:-1].replace("\\'", "'").replace('\\"', '"')
 
     @classmethod
-    def register(cls, symbol: Union[str, type[TK_co]], **kwargs: Any) -> type[TK_co]:
+    def register(cls, symbol: str | type[TK_co], **kwargs: Any) -> type[TK_co]:
         """
         Register/update a token class in the symbol table.
 
@@ -792,16 +793,22 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
         return cls.register(symbol, label='operator', lbp=bp, rbp=bp - 1, led=led)
 
     @classmethod
-    def method(cls, symbol: Union[str, type[TK_co]], bp: int = 0) \
+    def method(cls, symbol: str | type[TK_co], bp: int = 0, label: str = 'operator') \
             -> Callable[[Callable[..., RT]], Callable[..., RT]]:
         """
         Register a token for a symbol that represents a custom operator or redefine
         a method for an existing token.
         """
-        token_class = cls.register(symbol, label='operator', lbp=bp, rbp=bp)
+        token_class = cls.register(symbol, label=label, lbp=bp, rbp=bp)
 
         def bind(func: Callable[..., Any]) -> Callable[..., Any]:
-            method_name = func.__name__.partition('_')[0]
+            if '__' in func.__name__:
+                method_name = func.__name__.partition('__')[0]
+            elif func.__name__[0] != '_':
+                method_name = func.__name__.partition('_')[0]
+            else:
+                method_name = f"_{func.__name__[1:].partition('_')[0]}"
+
             if not callable(getattr(token_class, method_name)):
                 raise TypeError(f"{method_name!r} is not a method of {token_class}")
             setattr(token_class, method_name, func)

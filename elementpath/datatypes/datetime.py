@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -9,19 +9,34 @@
 #
 from abc import abstractmethod
 from collections.abc import Callable
-import re
 import math
 import operator
 import datetime
 from calendar import isleap
 from decimal import Decimal, Context
-from typing import cast, Any, Optional, TypeVar, Union
+from typing import cast, Any, TypeVar, Union
 
+from elementpath.aliases import XPathParserType
 from elementpath.helpers import MONTH_DAYS_LEAP, MONTH_DAYS, DAYS_IN_4Y, \
     DAYS_IN_100Y, DAYS_IN_400Y, days_from_common_era, adjust_day, \
-    normalized_seconds, months2days, round_number
-from .atomic_types import AnyAtomicType
+    normalized_seconds, months2days, round_number, LazyPattern
+from .any_types import AnyAtomicType
 from .untyped import UntypedAtomic
+
+###
+# Constants for base delta operations
+_ZERO_DELTA = datetime.timedelta(0)
+_1DAY_DELTA = datetime.timedelta(days=1)
+_REF_DATETIME = datetime.datetime(1, 1, 1)
+_MAX_OFFSET = datetime.timedelta(hours=14, minutes=0)
+_MIN_OFFSET = datetime.timedelta(hours=-14, minutes=0)
+
+__all__ = ['Timezone', 'AbstractDateTime', 'DateTime', 'GregorianDay',
+           'GregorianMonth', 'GregorianYear', 'GregorianMonthDay',
+           'Date', 'GregorianDay', 'GregorianMonthDay', 'Duration',
+           'DayTimeDuration', 'YearMonthDuration', 'GregorianYearMonth',
+           'GregorianYearMonth10', 'DateTime10', 'GregorianYear10', 'Time',
+           'DateTimeStamp', 'Date10']
 
 
 class Timezone(datetime.tzinfo):
@@ -31,14 +46,11 @@ class Timezone(datetime.tzinfo):
 
     :param offset: a timedelta instance or an XSD timezone formatted string.
     """
-    _maxoffset = datetime.timedelta(hours=14, minutes=0)
-    _minoffset = -_maxoffset
-
     def __init__(self, offset: datetime.timedelta) -> None:
-        super(Timezone, self).__init__()
+        super().__init__()
         if not isinstance(offset, datetime.timedelta):
             raise TypeError("offset must be a datetime.timedelta")
-        if offset < self._minoffset or offset > self._maxoffset:
+        if offset < _MIN_OFFSET or offset > _MAX_OFFSET:
             raise ValueError("offset must be between -14:00 and +14:00")
         self.offset = offset
 
@@ -81,13 +93,13 @@ class Timezone(datetime.tzinfo):
     def __str__(self) -> str:
         return self.tzname(None)
 
-    def utcoffset(self, dt: Optional[datetime.datetime]) -> datetime.timedelta:
+    def utcoffset(self, dt: datetime.datetime | None) -> datetime.timedelta:
         if not isinstance(dt, datetime.datetime) and dt is not None:
             raise TypeError("utcoffset() argument must be a "
                             "datetime.datetime instance or None")
         return self.offset
 
-    def tzname(self, dt: Optional[datetime.datetime]) -> str:
+    def tzname(self, dt: datetime.datetime | None) -> str:
         if not isinstance(dt, datetime.datetime) and dt is not None:
             raise TypeError("tzname() argument must be a "
                             "datetime.datetime instance or None")
@@ -102,7 +114,7 @@ class Timezone(datetime.tzinfo):
         hours, minutes = offset.seconds // 3600, offset.seconds // 60 % 60
         return '{}{:02d}:{:02d}'.format(sign, hours, minutes)
 
-    def dst(self, dt: Optional[datetime.datetime]) -> None:
+    def dst(self, dt: datetime.datetime | None) -> None:
         if not isinstance(dt, datetime.datetime) and dt is not None:
             raise TypeError("dst() argument must be a "
                             "datetime.datetime instance or None")
@@ -113,7 +125,25 @@ class Timezone(datetime.tzinfo):
         raise TypeError("fromutc() argument must be a datetime.datetime instance")
 
 
-_DT = TypeVar('_DT', bound='AbstractDateTime')
+_UTC_TIMEZONE = Timezone(datetime.timedelta(0))
+
+
+def get_comparable_datetimes(dt1: datetime.datetime, dt2: datetime.datetime) \
+        -> tuple[datetime.datetime, datetime.datetime]:
+    """
+    Fill timezone because Python can't compare offset-naive and offset-aware datetimes.
+    """
+    if dt1.tzinfo is dt2.tzinfo:
+        return dt1, dt2
+    elif dt1.tzinfo is None:
+        return dt1.replace(tzinfo=_UTC_TIMEZONE), dt2
+    elif dt2.tzinfo is None:
+        return dt1, dt2.replace(tzinfo=_UTC_TIMEZONE)
+    else:
+        return dt1, dt2
+
+
+DT = TypeVar('DT', bound='AbstractDateTime')
 
 
 class AbstractDateTime(AnyAtomicType):
@@ -121,31 +151,43 @@ class AbstractDateTime(AnyAtomicType):
     A class for representing XSD date/time objects. It uses and internal datetime.datetime
     attribute and an integer attribute for processing BCE years or for years after 9999 CE.
     """
-    xsd_version = '1.0'
-    pattern = re.compile(r'^$')
-    _utc_timezone = Timezone(datetime.timedelta(0))
-    _year = None
+    pattern = LazyPattern(r'^$')
+
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'AbstractDateTime':
+        match value:
+            case UntypedAtomic():
+                return cls.fromstring(value.value)
+            case datetime.datetime():
+                return cls.fromdatetime(value)
+            case _:
+                return cls.fromstring(value)
+
+    __slots__ = ('_dt', '_year')
 
     def __init__(self, year: int = 2000, month: int = 1, day: int = 1, hour: int = 0,
                  minute: int = 0, second: int = 0, microsecond: int = 0,
-                 tzinfo: Optional[datetime.tzinfo] = None) -> None:
+                 tzinfo: datetime.tzinfo | None = None) -> None:
 
         if hour == 24 and minute == second == microsecond == 0:
             hour = 0
             if year == 9999 and month == 12 and day == 31:
-                delta = datetime.timedelta(0)
+                delta = _ZERO_DELTA
                 year = 10000
                 month = 1
                 day = 1
             else:
-                delta = datetime.timedelta(days=1)
+                delta = _1DAY_DELTA
                 hour = 0
         else:
-            delta = datetime.timedelta(0)
+            delta = _ZERO_DELTA
 
         if 1 <= year <= 9999:
             self._dt = datetime.datetime(year, month, day, hour, minute,
                                          second, microsecond, tzinfo)
+            if delta:
+                self._dt += delta
+            self._year = self._dt.year
         elif year == 0:
             raise ValueError('0 is an illegal value for year')
         elif not isinstance(year, int):
@@ -154,15 +196,14 @@ class AbstractDateTime(AnyAtomicType):
             raise OverflowError("year overflow")
         else:
             self._year = year
-            if isleap(year + bool(self.xsd_version != '1.0')):
+            if isleap(year + bool(self._xsd_version != '1.0')):
                 self._dt = datetime.datetime(4, month, day, hour, minute,
                                              second, microsecond, tzinfo)
             else:
                 self._dt = datetime.datetime(6, month, day, hour, minute,
                                              second, microsecond, tzinfo)
-
-        if delta:
-            self._dt += delta
+            if delta:
+                self._dt += delta
 
     def __repr__(self) -> str:
         fields = self.pattern.groupindex.keys()
@@ -184,46 +225,123 @@ class AbstractDateTime(AnyAtomicType):
     def __str__(self) -> str:
         raise NotImplementedError
 
-    @abstractmethod
+    def __hash__(self) -> int:
+        return hash((self._dt, self._year))
+
+    def __eq__(self, other: object) -> bool:
+        return self._compare(other, operator.eq)
+
+    def __ne__(self, other: object) -> bool:
+        return not self._compare(other, operator.eq)
+
     def __lt__(self, other: object) -> bool:
-        raise NotImplementedError
+        return self._compare(other, operator.lt)
 
-    @abstractmethod
     def __le__(self, other: object) -> bool:
-        raise NotImplementedError
+        return self._compare(other, operator.le)
 
-    @abstractmethod
     def __gt__(self, other: object) -> bool:
-        raise NotImplementedError
+        return self._compare(other, operator.gt)
 
-    @abstractmethod
     def __ge__(self, other: object) -> bool:
-        raise NotImplementedError
+        return self._compare(other, operator.ge)
 
-    @abstractmethod
-    def __add__(self, other: object) -> Any:
-        raise NotImplementedError
+    def __add__(self, other: object) -> Union['DayTimeDuration', 'AbstractDateTime']:
+        if isinstance(other, AbstractDateTime):
+            raise TypeError("wrong type %r for operand %r" % (type(other), other))
+        return self._operation(other, operator.add)
 
-    @abstractmethod
-    def __sub__(self, other: object) -> Any:
-        raise NotImplementedError
+    def __sub__(self, other: object) -> Union['DayTimeDuration', 'AbstractDateTime']:
+        return self._operation(other, operator.sub)
+
+    def _compare(self, other: object, op: Callable[[Any, Any], bool]) -> bool:
+        if isinstance(other, datetime.datetime):
+            dt, year = other, other.year
+        elif isinstance(other, AbstractDateTime):
+            match (self.name, other.name):
+                case ('time', 'date') | ('date', 'time'):
+                    if op is operator.eq:
+                        raise TypeError("wrong type %r for operand %r" % (type(other), other))
+                case ('dateTime', 'date') | ('date', 'dateTime'):
+                    if op is not operator.eq:
+                        raise TypeError("wrong type %r for operand %r" % (type(other), other))
+
+            dt, year = other._dt, other._year
+        elif op is operator.eq:
+            return False
+        else:
+            raise TypeError("wrong type %r for operand %r" % (type(other), other))
+
+        if self._year != year:
+            return op(self._year, year)
+        elif self._dt.tzinfo is dt.tzinfo:
+            return op(self._dt, dt)
+        elif self.tzinfo is None:
+            return op(self._dt.replace(tzinfo=_UTC_TIMEZONE), dt)
+        elif other.tzinfo is None:
+            return op(self._dt, dt.replace(tzinfo=_UTC_TIMEZONE))
+        else:
+            return op(self._dt, dt)
+
+    def _operation(self, other: object, op: Callable[[Any, Any], Any]) \
+            -> Union['DayTimeDuration', 'AbstractDateTime']:
+        match other:
+            case AbstractDateTime():
+                dt1, dt2 = get_comparable_datetimes(self._dt, other._dt)
+                if 1 <= self._year <= 9999 and 1 <= other._year <= 9999:
+                    return DayTimeDuration.fromtimedelta(dt1 - dt2)
+                return DayTimeDuration.fromtimedelta(self.todelta() - other.todelta())
+
+            case datetime.timedelta():
+                delta = op(self.todelta(), other)
+                return type(self).fromdelta(delta, adjust_timezone=True)
+
+            case DayTimeDuration():
+                delta = op(self.todelta(), other.get_timedelta())
+                tzinfo = self._dt.tzinfo
+                if tzinfo is None:
+                    return type(self).fromdelta(delta)
+
+                value = type(self).fromdelta(delta + tzinfo.utcoffset(None))
+                value.tzinfo = tzinfo
+                return value
+
+            case YearMonthDuration():
+                month = op(self._dt.month - 1, other.months) % 12 + 1
+                year = self._year + op(self._dt.month - 1, other.months) // 12
+                day = adjust_day(year, month, self._dt.day)
+
+                if year > 0:
+                    dt = self._dt.replace(year=year, month=month, day=day)
+                elif isleap(year):
+                    dt = self._dt.replace(year=4, month=month, day=day)
+                else:
+                    dt = self._dt.replace(year=6, month=month, day=day)
+
+                kwargs = {k: getattr(dt, k) for k in self.pattern.groupindex.keys()}
+                if year <= 0:
+                    kwargs['year'] = year
+                return type(self)(**kwargs)
+
+            case _:
+                raise TypeError("wrong type %r for operand %r" % (type(other), other))
 
     @property
     def year(self) -> int:
-        return self._year or self._dt.year
+        return self._year
 
     @property
     def bce(self) -> bool:
-        return self._year is not None and self._year < 0
+        return self._year < 0
 
     @property
     def iso_year(self) -> str:
         """The ISO string representation of the year field."""
         year = self.year
         if -9999 <= year < -1:
-            return '{:05}'.format(year if self.xsd_version == '1.0' else year + 1)
+            return '{:05}'.format(year if self._xsd_version == '1.0' else year + 1)
         elif year == -1:
-            return '-0001' if self.xsd_version == '1.0' else '0000'
+            return '-0001' if self._xsd_version == '1.0' else '0000'
         elif 0 <= year <= 9999:
             return '{:04}'.format(year)
         else:
@@ -254,30 +372,30 @@ class AbstractDateTime(AnyAtomicType):
         return self._dt.microsecond
 
     @property
-    def tzinfo(self) -> Optional[Timezone]:
+    def tzinfo(self) -> datetime.tzinfo | None:
         return cast(Timezone, self._dt.tzinfo)
 
     @tzinfo.setter
-    def tzinfo(self, tz: Optional[Timezone]) -> None:
+    def tzinfo(self, tz: datetime.tzinfo | None) -> None:
         self._dt = self._dt.replace(tzinfo=tz)
 
-    def tzname(self) -> Optional[str]:
+    def tzname(self) -> str | None:
         return self._dt.tzname()
 
-    def astimezone(self, tz: Optional[datetime.tzinfo] = None) -> datetime.datetime:
+    def astimezone(self, tz: datetime.tzinfo | None = None) -> datetime.datetime:
         return self._dt.astimezone(tz)
 
     def isocalendar(self) -> tuple[int, int, int]:
-        return self._dt.isocalendar()
+        return cast(tuple[int, int, int], self._dt.isocalendar())
 
     @classmethod
-    def fromstring(cls: type[_DT], datetime_string: str, tzinfo: Optional[Timezone] = None) \
-            -> _DT:
+    def fromstring(cls: type[DT], datetime_string: str,
+                   tzinfo: datetime.tzinfo | None = None) -> DT:
         """
         Creates an XSD date/time instance from a string formatted value.
 
         :param datetime_string: a string containing an XSD formatted date/time specification.
-        :param tzinfo: optional implicit timezone information, must be a `Timezone` instance.
+        :param tzinfo: optional implicit timezone information (defaults to UTC).
         :return: an AbstractDateTime concrete subclass instance.
         """
         if not isinstance(datetime_string, str):
@@ -313,7 +431,7 @@ class AbstractDateTime(AnyAtomicType):
                       "exceeds 4 digits leading zeroes are not allowed)"
                 raise ValueError(msg.format(datetime_string, cls))
 
-            if cls.xsd_version == '1.0':
+            if cls._xsd_version == '1.0':
                 if kwargs['year'] == 0:
                     raise ValueError("year '0000' is an illegal value for XSD 1.0")
             elif kwargs['year'] <= 0:
@@ -322,8 +440,8 @@ class AbstractDateTime(AnyAtomicType):
         return cls(tzinfo=tzinfo, **kwargs)
 
     @classmethod
-    def fromdatetime(cls: type[_DT], dt: Union[datetime.datetime, datetime.date, datetime.time],
-                     year: Optional[int] = None) -> _DT:
+    def fromdatetime(cls: type[DT], dt: Union[datetime.datetime, datetime.date, datetime.time],
+                     year: int | None = None) -> DT:
         """
         Creates an XSD date/time instance from a datetime.datetime/date/time instance.
 
@@ -342,52 +460,9 @@ class AbstractDateTime(AnyAtomicType):
             kwargs['year'] = year
         return cls(**kwargs)
 
-    # Python can't compare offset-naive and offset-aware datetimes
-    def _get_operands(self, other: object) -> tuple[datetime.datetime, datetime.datetime]:
-        if isinstance(other, (self.__class__, datetime.datetime)) or \
-                isinstance(self, other.__class__):
-            dt: datetime.datetime = getattr(other, '_dt', cast(datetime.datetime, other))
-
-            if self._dt.tzinfo is dt.tzinfo:
-                return self._dt, dt
-            elif self.tzinfo is None:
-                return self._dt.replace(tzinfo=self._utc_timezone), dt
-            elif dt.tzinfo is None:
-                return self._dt, dt.replace(tzinfo=self._utc_timezone)
-            else:
-                return self._dt, dt
-        else:
-            raise TypeError("wrong type %r for operand %r" % (type(other), other))
-
-    def __hash__(self) -> int:
-        return hash((self._dt, self._year))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, (AbstractDateTime, datetime.datetime)):
-            return False
-        try:
-            return operator.eq(*self._get_operands(other)) and self.year == other.year
-        except TypeError:
-            return False
-
-    def __ne__(self, other: object) -> bool:
-        if not isinstance(other, (AbstractDateTime, datetime.datetime)):
-            return True
-        try:
-            return operator.ne(*self._get_operands(other)) or self.year != other.year
-        except TypeError:
-            return True
-
-
-class OrderedDateTime(AbstractDateTime):
-
-    @abstractmethod
-    def __str__(self) -> str:
-        raise NotImplementedError
-
     @classmethod
     def fromdelta(cls, delta: datetime.timedelta, adjust_timezone: bool = False) \
-            -> 'OrderedDateTime':
+            -> 'AbstractDateTime':
         """
         Creates an XSD dateTime/date instance from a datetime.timedelta related to
         0001-01-01T00:00:00 CE. In case of a date the time part is not counted.
@@ -397,7 +472,7 @@ class OrderedDateTime(AbstractDateTime):
         with eventually present hours and minutes.
         """
         try:
-            dt = datetime.datetime(1, 1, 1) + delta
+            dt = _REF_DATETIME + delta
         except OverflowError:
             days = delta.days
             if days > 0:
@@ -441,7 +516,7 @@ class OrderedDateTime(AbstractDateTime):
         else:
             year = dt.year
 
-        if issubclass(cls, Date10):
+        if issubclass(cls, Date):
             if adjust_timezone and (dt.hour or dt.minute):
                 assert dt.tzinfo is None
                 hour, minute = dt.hour, dt.minute
@@ -460,12 +535,14 @@ class OrderedDateTime(AbstractDateTime):
 
     def todelta(self) -> datetime.timedelta:
         """Returns the datetime.timedelta from 0001-01-01T00:00:00 CE."""
-        if self._year is None:
-            delta = operator.sub(*self._get_operands(datetime.datetime(1, 1, 1)))
-            return cast(datetime.timedelta, delta)
+        if 1 <= self._year <= 9999:
+            if self._dt.tzinfo is None:
+                return self._dt - _REF_DATETIME
+            else:
+                return self._dt - _REF_DATETIME.replace(tzinfo=_UTC_TIMEZONE)
 
         year, dt = self.year, self._dt
-        tzinfo = None if dt.tzinfo is None else self._utc_timezone
+        tzinfo = None if dt.tzinfo is None else _UTC_TIMEZONE
 
         if year > 0:
             m_days = MONTH_DAYS_LEAP if isleap(year) else MONTH_DAYS
@@ -477,104 +554,69 @@ class OrderedDateTime(AbstractDateTime):
         delta = (dt - datetime.datetime(dt.year, dt.month, day=1, tzinfo=tzinfo))
         return datetime.timedelta(days=days, seconds=delta.total_seconds())
 
-    def _date_operator(self, op: Callable[[Any, Any], Any], other: object) \
-            -> Union['DayTimeDuration', 'OrderedDateTime']:
-        if isinstance(other, self.__class__):
-            dt1, dt2 = self._get_operands(other)
-            if self._year is None and other._year is None:
-                return DayTimeDuration.fromtimedelta(dt1 - dt2)
-            return DayTimeDuration.fromtimedelta(self.todelta() - other.todelta())
 
-        elif isinstance(other, datetime.timedelta):
-            delta = op(self.todelta(), other)
-            return type(self).fromdelta(delta, adjust_timezone=True)
-
-        elif isinstance(other, DayTimeDuration):
-            delta = op(self.todelta(), other.get_timedelta())
-            tzinfo = cast(Optional[Timezone], self._dt.tzinfo)
-            if tzinfo is None:
-                return type(self).fromdelta(delta)
-
-            value = type(self).fromdelta(delta + tzinfo.offset)
-            value.tzinfo = tzinfo
-            return value
-
-        elif isinstance(other, YearMonthDuration):
-            month = op(self._dt.month - 1, other.months) % 12 + 1
-            year = self.year + op(self._dt.month - 1, other.months) // 12
-            day = adjust_day(year, month, self._dt.day)
-
-            if year > 0:
-                dt = self._dt.replace(year=year, month=month, day=day)
-            elif isleap(year):
-                dt = self._dt.replace(year=4, month=month, day=day)
-            else:
-                dt = self._dt.replace(year=6, month=month, day=day)
-
-            kwargs = {k: getattr(dt, k) for k in self.pattern.groupindex.keys()}
-            if year <= 0:
-                kwargs['year'] = year
-            return type(self)(**kwargs)
-
-        else:
-            raise TypeError("wrong type %r for operand %r" % (type(other), other))
-
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, (AbstractDateTime, datetime.datetime)):
-            return NotImplemented
-
-        dt1, dt2 = self._get_operands(other)
-        y1, y2 = self.year, other.year
-        return y1 < y2 or y1 == y2 and dt1 < dt2
-
-    def __le__(self, other: object) -> bool:
-        if not isinstance(other, (AbstractDateTime, datetime.datetime)):
-            return NotImplemented
-
-        dt1, dt2 = self._get_operands(other)
-        y1, y2 = self.year, other.year
-        return y1 < y2 or y1 == y2 and dt1 <= dt2
-
-    def __gt__(self, other: object) -> bool:
-        if not isinstance(other, (AbstractDateTime, datetime.datetime)):
-            return NotImplemented
-
-        dt1, dt2 = self._get_operands(other)
-        y1, y2 = self.year, other.year
-        return y1 > y2 or y1 == y2 and dt1 > dt2
-
-    def __ge__(self, other: object) -> bool:
-        if not isinstance(other, (AbstractDateTime, datetime.datetime)):
-            return NotImplemented
-
-        dt1, dt2 = self._get_operands(other)
-        y1, y2 = self.year, other.year
-        return y1 > y2 or y1 == y2 and dt1 >= dt2
-
-    def __add__(self, other: object) -> Union['DayTimeDuration', 'OrderedDateTime']:
-        if isinstance(other, OrderedDateTime):
-            raise TypeError("wrong type %r for operand %r" % (type(other), other))
-        return self._date_operator(operator.add, other)
-
-    def __sub__(self, other: object) -> Union['DayTimeDuration', 'OrderedDateTime']:
-        return self._date_operator(operator.sub, other)
-
-
-class DateTime10(OrderedDateTime):
-    """XSD 1.0 xs:dateTime builtin type"""
+class DateTime(AbstractDateTime):
     name = 'dateTime'
-    pattern = re.compile(
+    pattern = LazyPattern(
         r'^(?P<year>-?[0-9]*[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})'
         r'(T(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):'
         r'(?P<second>[0-9]{2})(?:\.(?P<microsecond>[0-9]+))?)'
-        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
+    _xsd_version = '1.1'
 
-    def __init__(self, year: int, month: int, day: int, hour: int = 0,
-                 minute: int = 0, second: int = 0, microsecond: int = 0,
-                 tzinfo: Optional[datetime.tzinfo] = None) -> None:
-        super(DateTime10, self).__init__(
-            year, month, day, hour, minute, second, microsecond, tzinfo
-        )
+    @classmethod
+    def make(cls, value: Any,
+             parser: XPathParserType | None = None,
+             **kwargs: Any) -> 'DateTime':
+
+        if cls._xsd_version == '1.0':
+            dt_class = cls
+        elif parser is not None:
+            dt_class = DateTime10 if parser.xsd_version == '1.0' else cls
+        elif kwargs.get('xsd_version') == '1.0':
+            dt_class = DateTime10
+        else:
+            dt_class = cls
+
+        match value:
+            case UntypedAtomic():
+                return dt_class.fromstring(value.value)
+            case Date():
+                return dt_class(value.year, value.month, value.day, tzinfo=value.tzinfo)
+            case DateTime():
+                if value.__class__ is dt_class:
+                    return value
+
+                year = value.year
+                if year < 0:
+                    if value.xsd_versions != '1.0':
+                        year += 1
+                    if not dt_class.__name__.endswith('10'):
+                        year -= 1
+
+                return dt_class(
+                    year, value.month, value.day, value.hour, value.minute,
+                    value.second, value.microsecond, value.tzinfo
+                )
+            case _:
+                return dt_class.fromstring(value)
+
+    def __init__(self, year: int, month: int, day: int,
+                 hour: int = 0, minute: int = 0, second: int = 0,
+                 microsecond: int = 0,
+                 tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param year: the year, between -9999 and 9999
+        :param month: the month, between 1 and 12
+        :param day: the day, between 1 and 31
+        :param hour: the hour, between 0 and 23
+        :param minute: the minute, between 0 and 59
+        :param second: the second, between 0 and 59
+        :param microsecond: the microsecond, between 0 and 999999
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
+        super().__init__(year, month, day, hour, minute, second, microsecond, tzinfo)
 
     def __str__(self) -> str:
         if self.microsecond:
@@ -588,31 +630,74 @@ class DateTime10(OrderedDateTime):
         )
 
 
-class DateTime(DateTime10):
-    """XSD 1.1 xs:dateTime builtin type"""
+class DateTime10(DateTime):
     name = 'dateTime'
-    xsd_version = '1.1'
+    _xsd_version = '1.0'
+
+    @classmethod
+    def __subclasshook__(cls, subclass: type) -> bool:
+        return subclass is DateTime10 or subclass is DateTime
 
 
 class DateTimeStamp(DateTime):
-    """XSD 1.1 xs:dateTimeStamp builtin type"""
     name = 'dateTimeStamp'
-    pattern = re.compile(
+    pattern = LazyPattern(
         r'^(?P<year>-?[0-9]*[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})'
         r'(T(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):'
         r'(?P<second>[0-9]{2})(?:\.(?P<microsecond>[0-9]+))?)'
-        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))$')
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))$'
+    )
 
 
-class Date10(OrderedDateTime):
-    """XSD 1.0 xs:date builtin type"""
+class Date(AbstractDateTime):
     name = 'date'
-    pattern = re.compile(r'^(?P<year>-?[0-9]*[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})'
-                         r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+    pattern = LazyPattern(
+        r'^(?P<year>-?[0-9]*[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})'
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
+    _xsd_version = '1.1'
+
+    @classmethod
+    def make(cls, value: Any,
+             parser: XPathParserType | None = None,
+             **kwargs: Any) -> 'Date':
+
+        if cls._xsd_version == '1.0':
+            dt_class = cls
+        elif parser is not None:
+            dt_class = Date10 if parser.xsd_version == '1.0' else Date
+        elif kwargs.get('xsd_version') == '1.0':
+            dt_class = Date10
+        else:
+            dt_class = cls
+
+        match value:
+            case UntypedAtomic():
+                return dt_class.fromstring(value.value)
+            case DateTime() | Date():
+                if isinstance(value, Date) and value.__class__ is dt_class:
+                    return value
+
+                year = value.year
+                if year < 0:
+                    if value.xsd_versions != '1.0':
+                        year += 1
+                    if dt_class._xsd_version != '1.0':
+                        year -= 1
+
+                return dt_class(year, value.month, value.day, value.tzinfo)
+            case _:
+                return dt_class.fromstring(value)
 
     def __init__(self, year: int, month: int, day: int,
-                 tzinfo: Optional[datetime.tzinfo] = None) -> None:
-        super(Date10, self).__init__(year, month, day, tzinfo=tzinfo)
+                 tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param year: the year, between -9999 and 9999
+        :param month: the month, between 1 and 12
+        :param day: the day, between 1 and 31
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
+        super().__init__(year, month, day, tzinfo=tzinfo)
 
     def __str__(self) -> str:
         return '{}-{:02}-{:02}{}'.format(
@@ -620,103 +705,261 @@ class Date10(OrderedDateTime):
         )
 
 
-class Date(Date10):
-    """XSD 1.1 xs:date builtin type"""
+class Date10(Date):
     name = 'date'
-    xsd_version = '1.1'
+    _xsd_version = '1.0'
+
+    @classmethod
+    def __subclasshook__(cls, subclass: type) -> bool:
+        return subclass is Date10 or subclass is Date
 
 
-class GregorianDay(OrderedDateTime):
-    """XSD xs:gDay builtin type"""
+class GregorianDay(AbstractDateTime):
     name = 'gDay'
-    pattern = re.compile(r'^---(?P<day>[0-9]{2})'
-                         r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+    pattern = LazyPattern(
+        r'^---(?P<day>[0-9]{2})'
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
 
-    def __init__(self, day: int, tzinfo: Optional[Timezone] = None) -> None:
-        super(GregorianDay, self).__init__(day=day, tzinfo=tzinfo)
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'GregorianDay':
+        match value:
+            case GregorianDay():
+                return value
+            case UntypedAtomic():
+                return cls.fromstring(value.value)
+            case Date() | DateTime():
+                return cls(value.day, value.tzinfo)
+            case _:
+                return cls.fromstring(value)
+
+    def __init__(self, day: int, tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param day: the day, between 1 and 31
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
+        super().__init__(day=day, tzinfo=tzinfo)
 
     def __str__(self) -> str:
         return '---{:02}{}'.format(self.day, str(self.tzinfo or ''))
 
 
-class GregorianMonth(OrderedDateTime):
-    """XSD xs:gMonth builtin type"""
+class GregorianMonth(AbstractDateTime):
     name = 'gMonth'
-    pattern = re.compile(r'^--(?P<month>[0-9]{2})'
-                         r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+    pattern = LazyPattern(
+        r'^--(?P<month>[0-9]{2})'
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
 
-    def __init__(self, month: int, tzinfo: Optional[Timezone] = None) -> None:
-        super(GregorianMonth, self).__init__(month=month, tzinfo=tzinfo)
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'GregorianMonth':
+        match value:
+            case GregorianMonth():
+                return value
+            case UntypedAtomic():
+                return cls.fromstring(value.value)
+            case Date() | DateTime():
+                return cls(value.month, value.tzinfo)
+            case _:
+                return cls.fromstring(value)
+
+    def __init__(self, month: int, tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param month: the month, between 1 and 12
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
+        super().__init__(month=month, tzinfo=tzinfo)
 
     def __str__(self) -> str:
         return '--{:02}{}'.format(self.month, str(self.tzinfo or ''))
 
 
-class GregorianMonthDay(OrderedDateTime):
-    """XSD xs:gMonthDay builtin type"""
+class GregorianMonthDay(AbstractDateTime):
     name = 'gMonthDay'
-    pattern = re.compile(r'^--(?P<month>[0-9]{2})-(?P<day>[0-9]{2})'
-                         r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+    pattern = LazyPattern(
+        r'^--(?P<month>[0-9]{2})-(?P<day>[0-9]{2})'
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
 
-    def __init__(self, month: int, day: int, tzinfo: Optional[Timezone] = None) -> None:
-        super(GregorianMonthDay, self).__init__(month=month, day=day, tzinfo=tzinfo)
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'GregorianMonthDay':
+        match value:
+            case GregorianMonthDay():
+                return value
+            case UntypedAtomic():
+                return cls.fromstring(value.value)
+            case Date() | DateTime():
+                return cls(value.month, value.day, value.tzinfo)
+            case _:
+                return cls.fromstring(value)
+
+    def __init__(self, month: int, day: int, tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param month: the month, between 1 and 12
+        :param day: the day, between 1 and 31
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
+        super().__init__(month=month, day=day, tzinfo=tzinfo)
 
     def __str__(self) -> str:
         return '--{:02}-{:02}{}'.format(self.month, self.day, str(self.tzinfo or ''))
 
 
-class GregorianYear10(OrderedDateTime):
-    """XSD 1.0 xs:gYear builtin type"""
+class GregorianYear(AbstractDateTime):
     name = 'gYear'
-    pattern = re.compile(r'^(?P<year>-?[0-9]*[0-9]{4})'
-                         r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+    pattern = LazyPattern(
+        r'^(?P<year>-?[0-9]*[0-9]{4})'
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
+    _xsd_version = '1.1'
 
-    def __init__(self, year: int, tzinfo: Optional[Timezone] = None) -> None:
-        super(GregorianYear10, self).__init__(year, tzinfo=tzinfo)
+    @classmethod
+    def make(cls, value: Any,
+             parser: XPathParserType | None = None,
+             **kwargs: Any) -> 'GregorianYear':
+
+        if cls._xsd_version == '1.0':
+            dt_class = cls
+        elif parser is not None:
+            dt_class = GregorianYear10 if parser.xsd_version == '1.0' else GregorianYear
+        elif kwargs.get('xsd_version') == '1.0':
+            dt_class = GregorianYear10
+        else:
+            dt_class = GregorianYear
+
+        match value:
+            case UntypedAtomic():
+                return dt_class.fromstring(value.value)
+            case Date() | DateTime() | GregorianYear():
+                if value.__class__ is dt_class and isinstance(value, GregorianYear):
+                    return value
+
+                year = value.year
+                if year < 0:
+                    if value.xsd_versions != '1.0':
+                        year += 1
+                    if dt_class._xsd_version != '1.0':
+                        year -= 1
+
+                return dt_class(year, value.tzinfo)
+            case _:
+                return dt_class.fromstring(value)
+
+    def __init__(self, year: int, tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param year: the year, between -9999 and 9999
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
+        super().__init__(year, tzinfo=tzinfo)
 
     def __str__(self) -> str:
         return '{}{}'.format(self.iso_year, str(self.tzinfo or ''))
 
 
-class GregorianYear(GregorianYear10):
-    """XSD 1.1 xs:gYear builtin type"""
+class GregorianYear10(GregorianYear):
     name = 'gYear'
-    xsd_version = '1.1'
+    _xsd_version = '1.0'
+
+    @classmethod
+    def __subclasshook__(cls, subclass: type) -> bool:
+        return subclass is GregorianYear10 or subclass is GregorianYear
 
 
-class GregorianYearMonth10(OrderedDateTime):
-    """XSD 1.0 xs:gYearMonth builtin type"""
+class GregorianYearMonth(AbstractDateTime):
     name = 'gYearMonth'
-    pattern = re.compile(r'^(?P<year>-?[0-9]*[0-9]{4})-(?P<month>[0-9]{2})'
-                         r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+    pattern = LazyPattern(
+        r'^(?P<year>-?[0-9]*[0-9]{4})-(?P<month>[0-9]{2})'
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
+    _xsd_version = '1.1'
 
-    def __init__(self, year: int, month: int, tzinfo: Optional[Timezone] = None) -> None:
-        super(GregorianYearMonth10, self).__init__(year, month, tzinfo=tzinfo)
+    @classmethod
+    def make(cls, value: Any,
+             parser: XPathParserType | None = None,
+             **kwargs: Any) -> 'GregorianYearMonth':
+
+        if cls._xsd_version == '1.0':
+            dt_class = cls
+        elif parser is not None:
+            dt_class = GregorianYearMonth10 if parser.xsd_version == '1.0' else GregorianYearMonth
+        elif kwargs.get('xsd_version') == '1.0':
+            dt_class = GregorianYearMonth10
+        else:
+            dt_class = GregorianYearMonth
+
+        match value:
+            case UntypedAtomic():
+                return dt_class.fromstring(value.value)
+            case Date() | DateTime() | GregorianYearMonth():
+                if value.__class__ is dt_class and isinstance(value, GregorianYearMonth):
+                    return value
+
+                year = value.year
+                if year < 0:
+                    if value.xsd_versions != '1.0':
+                        year += 1
+                    if dt_class._xsd_version != '1.0':
+                        year -= 1
+
+                return dt_class(year, value.month, value.tzinfo)
+            case _:
+                return dt_class.fromstring(value)
+
+    def __init__(self, year: int, month: int, tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param year: the year, between -9999 and 9999
+        :param month: the month, between 1 and 12
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
+        super().__init__(year, month, tzinfo=tzinfo)
 
     def __str__(self) -> str:
         return '{}-{:02}{}'.format(self.iso_year, self.month, str(self.tzinfo or ''))
 
 
-class GregorianYearMonth(GregorianYearMonth10):
-    """XSD 1.1 xs:gYearMonth builtin type"""
+class GregorianYearMonth10(GregorianYearMonth):
     name = 'gYearMonth'
-    xsd_version = '1.1'
+    _xsd_version = '1.0'
+
+    @classmethod
+    def __subclasshook__(cls, subclass: type) -> bool:
+        return subclass is GregorianYearMonth10 or subclass is GregorianYearMonth
 
 
 class Time(AbstractDateTime):
-    """XSD xs:time builtin type"""
     name = 'time'
-    pattern = re.compile(
+    pattern = LazyPattern(
         r'^(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):'
         r'(?P<second>[0-9]{2})(?:\.(?P<microsecond>[0-9]+))?'
-        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$')
+        r'(?P<tzinfo>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$'
+    )
+
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'Time':
+        match value:
+            case Time():
+                return value
+            case UntypedAtomic():
+                return cls.fromstring(value.value)
+            case DateTime():
+                return cls(value.hour, value.minute, value.second,
+                           value.microsecond, value.tzinfo)
+            case _:
+                return cls.fromstring(value)
 
     def __init__(self, hour: int = 0, minute: int = 0,
                  second: int = 0, microsecond: int = 0,
-                 tzinfo: Union[None, Timezone, datetime.tzinfo] = None) -> None:
+                 tzinfo: datetime.tzinfo | None = None) -> None:
+        """
+        :param hour: the hour, between 0 and 23
+        :param minute: the minute, between 0 and 59
+        :param second: the second, between 0 and 59
+        :param microsecond: the microsecond, between 0 and 999999
+        :param tzinfo: optional implicit timezone information (defaults to UTC)
+        """
         if hour == 24 and minute == second == microsecond == 0:
             hour = 0
-        super(Time, self).__init__(
+        super().__init__(
             hour=hour, minute=minute, second=second, microsecond=microsecond, tzinfo=tzinfo
         )
 
@@ -731,18 +974,6 @@ class Time(AbstractDateTime):
             self.hour, self.minute, self.second, str(self.tzinfo or '')
         )
 
-    def __lt__(self, other: object) -> bool:
-        return cast(bool, operator.lt(*self._get_operands(other)))
-
-    def __le__(self, other: object) -> bool:
-        return cast(bool, operator.le(*self._get_operands(other)))
-
-    def __gt__(self, other: object) -> bool:
-        return cast(bool, operator.gt(*self._get_operands(other)))
-
-    def __ge__(self, other: object) -> bool:
-        return cast(bool, operator.ge(*self._get_operands(other)))
-
     def __add__(self, other: object) -> 'Time':
         if isinstance(other, DayTimeDuration):
             dt = self._dt + other.get_timedelta()
@@ -753,9 +984,9 @@ class Time(AbstractDateTime):
         return Time(dt.hour, dt.minute, dt.second, dt.microsecond, dt.tzinfo)
 
     def __sub__(self, other: object) -> Union['DayTimeDuration', 'Time']:
-        if isinstance(other, self.__class__):
-            delta = operator.sub(*self._get_operands(other))
-            return DayTimeDuration.fromtimedelta(delta)
+        if isinstance(other, Time):
+            dt1, dt2 = get_comparable_datetimes(self._dt, other._dt)
+            return DayTimeDuration.fromtimedelta(dt1 - dt2)
         elif isinstance(other, DayTimeDuration):
             dt = self._dt - other.get_timedelta()
             return Time(dt.hour, dt.minute, dt.second, dt.microsecond, dt.tzinfo)
@@ -770,20 +1001,30 @@ _D = TypeVar('_D', bound='Duration')
 
 
 class Duration(AnyAtomicType):
-    """
-    Base class for the XSD duration types.
-
-    :param months: an integer value that represents years and months.
-    :param seconds: a decimal or an integer instance that represents \
-    days, hours, minutes, seconds and fractions of seconds.
-    """
     name = 'duration'
-    pattern = re.compile(
+    pattern = LazyPattern(
         r'^(-)?P(?=[0-9]|T)(?:([0-9]+)Y)?(?:([0-9]+)M)?(?:([0-9]+)D)?'
         r'(?:T(?=[0-9])(?:([0-9]+)H)?(?:([0-9]+)M)?(?:([0-9]+(?:\.[0-9]+)?)S)?)?$'
     )
 
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'Duration':
+        match value:
+            case Duration():
+                return value
+            case UntypedAtomic():
+                return cls.fromstring(value.value)
+            case _:
+                return cls.fromstring(value)
+
+    __slots__ = ('months', 'seconds')
+
     def __init__(self, months: int = 0, seconds: Union[Decimal, int] = 0) -> None:
+        """
+        :param months: an integer value that represents years and months.
+        :param seconds: a decimal or an integer instance that represents \
+        days, hours, minutes, seconds and fractions of seconds.
+        """
         if seconds < 0 < months or months < 0 < seconds:
             raise ValueError('signs differ: (months=%d, seconds=%d)' % (months, seconds))
         elif abs(months) > 2 ** 31:
@@ -932,11 +1173,25 @@ class Duration(AnyAtomicType):
 
 
 class YearMonthDuration(Duration):
-
     name = 'yearMonthDuration'
 
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'YearMonthDuration':
+        match value:
+            case YearMonthDuration():
+                return value
+            case Duration():
+                return YearMonthDuration(months=value.months)
+            case UntypedAtomic():
+                return YearMonthDuration.fromstring(value.value)
+            case _:
+                return YearMonthDuration.fromstring(value)
+
     def __init__(self, months: int = 0) -> None:
-        super(YearMonthDuration, self).__init__(months, 0)
+        """
+        :param months: an integer value that represents years and months.
+        """
+        super().__init__(months, 0)
 
     def __repr__(self) -> str:
         return '%s(months=%r)' % (self.__class__.__name__, self.months)
@@ -955,10 +1210,10 @@ class YearMonthDuration(Duration):
             return 'P%dY%dM' % (years, months)
 
     def __add__(self, other: object) \
-            -> Union['YearMonthDuration', 'DayTimeDuration', 'OrderedDateTime']:
+            -> Union['YearMonthDuration', 'DayTimeDuration', 'AbstractDateTime']:
         if isinstance(other, self.__class__):
             return YearMonthDuration(months=self.months + other.months)
-        elif isinstance(other, (DateTime10, Date10)):
+        elif isinstance(other, (DateTime, Date)):
             return other + self
         raise TypeError("cannot add %r to %r" % (type(other), type(self)))
 
@@ -982,17 +1237,32 @@ class YearMonthDuration(Duration):
 
 
 class DayTimeDuration(Duration):
-
     name = 'dayTimeDuration'
 
-    def __init__(self, seconds: Union[Decimal, int] = 0) -> None:
-        super(DayTimeDuration, self).__init__(0, seconds)
+    @classmethod
+    def make(cls, value: Any, **kwargs: Any) -> 'DayTimeDuration':
+        match value:
+            case DayTimeDuration():
+                return value
+            case Duration():
+                return cls(seconds=value.seconds)
+            case UntypedAtomic():
+                return cls.fromstring(value.value)
+            case _:
+                return cls.fromstring(value)
 
     @classmethod
     def fromtimedelta(cls, td: datetime.timedelta) -> 'DayTimeDuration':
         return cls(seconds=Decimal(
             '{}.{:06}'.format(td.days * 86400 + td.seconds, td.microseconds)
         ))
+
+    def __init__(self, seconds: Union[Decimal, int] = 0) -> None:
+        """
+        :param seconds: a decimal or an integer instance that represents \
+        days, hours, minutes, seconds and fractions of seconds.
+        """
+        super().__init__(0, seconds)
 
     def get_timedelta(self) -> datetime.timedelta:
         return datetime.timedelta(
@@ -1002,8 +1272,8 @@ class DayTimeDuration(Duration):
     def __repr__(self) -> str:
         return '%s(seconds=%s)' % (self.__class__.__name__, normalized_seconds(self.seconds))
 
-    def __add__(self, other: object) -> Union['DayTimeDuration', Time, OrderedDateTime]:
-        if isinstance(other, (Time, Date10)):
+    def __add__(self, other: object) -> Union['DayTimeDuration', Time, AbstractDateTime]:
+        if isinstance(other, (Time, Date)):
             return other + self
         elif isinstance(other, self.__class__):
             return DayTimeDuration(self.seconds + other.seconds)

@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2024, SISSA (International School for Advanced Studies).
+# Copyright (c), 2024-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from decimal import Decimal
 from typing import Optional, Union
 
+from elementpath import aliases
 from elementpath.aliases import AnyNsmapType
 from elementpath.protocols import XsdTypeProtocol
 from elementpath.exceptions import xpath_error
@@ -26,7 +27,7 @@ class _Notation(dt.Notation):
     """An instantiable xs:NOTATION."""
 
 
-ATOMIC_VALUES: dict[str, dict[str, dt.AtomicType]] = {'1.0': {
+_ATOMIC_VALUES: dict[str, dict[str, aliases.AtomicType]] = {'1.0': {
     f'{{{XSD_NAMESPACE}}}untypedAtomic': dt.UntypedAtomic('1'),
     f'{{{XSD_NAMESPACE}}}anyType': dt.UntypedAtomic('1'),
     f'{{{XSD_NAMESPACE}}}anySimpleType': dt.UntypedAtomic('1'),
@@ -34,7 +35,7 @@ ATOMIC_VALUES: dict[str, dict[str, dt.AtomicType]] = {'1.0': {
     f'{{{XSD_NAMESPACE}}}boolean': True,
     f'{{{XSD_NAMESPACE}}}decimal': Decimal('1.0'),
     f'{{{XSD_NAMESPACE}}}double': float('1.0'),
-    f'{{{XSD_NAMESPACE}}}float': dt.Float10('1.0'),
+    f'{{{XSD_NAMESPACE}}}float': dt.Float('1.0'),
     f'{{{XSD_NAMESPACE}}}string': '  alpha\t',
     f'{{{XSD_NAMESPACE}}}date': dt.Date10.fromstring('2000-01-01'),
     f'{{{XSD_NAMESPACE}}}dateTime': dt.DateTime10.fromstring('2000-01-01T12:00:00'),
@@ -76,21 +77,27 @@ ATOMIC_VALUES: dict[str, dict[str, dt.AtomicType]] = {'1.0': {
     f'{{{XSD_NAMESPACE}}}unsignedByte': dt.UnsignedByte('1'),
 }}
 
-ATOMIC_VALUES['1.1'] = ATOMIC_VALUES['1.0'].copy()
-ATOMIC_VALUES['1.1'].update({
-    f'{{{XSD_NAMESPACE}}}float': dt.Float('1.0'),
+_ATOMIC_VALUES['1.1'] = {
+    **_ATOMIC_VALUES['1.0'],
     f'{{{XSD_NAMESPACE}}}date': dt.Date.fromstring('2000-01-01'),
     f'{{{XSD_NAMESPACE}}}dateTime': dt.DateTime.fromstring('2000-01-01T12:00:00'),
     f'{{{XSD_NAMESPACE}}}gYear': dt.GregorianYear.fromstring('1999'),
     f'{{{XSD_NAMESPACE}}}gYearMonth': dt.GregorianYearMonth.fromstring('1999-09'),
     f'{{{XSD_NAMESPACE}}}dateTimeStamp': dt.DateTimeStamp.fromstring('2000-01-01T12:00:00+01:00'),
-})
+}
+
+# List based types
+_LIST_VALUES = {
+    f'{{{XSD_NAMESPACE}}}IDREFS': dt.Idrefs([dt.Idref('id_ref1'), dt.Idref('id_ref2')]),
+    f'{{{XSD_NAMESPACE}}}ENTITIES': dt.Entities([dt.Entity('entity1'), dt.Entity('entity2')]),
+    f'{{{XSD_NAMESPACE}}}NMTOKENS': dt.NMTokens([dt.NMToken('a_token'), dt.NMToken('b_token')]),
+}
 
 
-def iter_atomic_values(xsd_type: XsdTypeProtocol) -> Iterator[dt.AtomicType]:
+def iter_atomic_values(xsd_type: XsdTypeProtocol) -> Iterator[aliases.AtomicType]:
     """Generates a list of XSD atomic values related to provided XSD type."""
 
-    def _iter_values(root_type: XsdTypeProtocol, depth: int) -> Iterator[dt.AtomicType]:
+    def _iter_values(root_type: XsdTypeProtocol, depth: int) -> Iterator[aliases.AtomicType]:
         if depth > 15:
             return
         if root_type.name in atomic_values:
@@ -99,7 +106,7 @@ def iter_atomic_values(xsd_type: XsdTypeProtocol) -> Iterator[dt.AtomicType]:
             for member_type in root_type.member_types:
                 yield from _iter_values(member_type, depth + 1)
 
-    atomic_values = ATOMIC_VALUES[xsd_type.xsd_version]
+    atomic_values = _ATOMIC_VALUES[xsd_type.xsd_version]
     if xsd_type.name in atomic_values:
         yield atomic_values[xsd_type.name]
     elif xsd_type.is_simple() or (simple_type := xsd_type.simple_type) is None:
@@ -112,9 +119,9 @@ def iter_atomic_values(xsd_type: XsdTypeProtocol) -> Iterator[dt.AtomicType]:
 
 def get_atomic_sequence(xsd_type: Optional[XsdTypeProtocol],
                         text: Optional[str] = None,
-                        namespaces: AnyNsmapType = None) -> Iterator[dt.AtomicType]:
+                        namespaces: AnyNsmapType = None) -> Iterator[aliases.AtomicType]:
     """Returns a decoder function for atomic values of an XSD type instance."""
-    def decode(s: str) -> dt.AtomicType:
+    def decode(s: str) -> aliases.AtomicType:
         if isinstance(value, (dt.AbstractDateTime, dt.Duration)):
             return value.fromstring(s)
         elif not isinstance(value, dt.AbstractQName):

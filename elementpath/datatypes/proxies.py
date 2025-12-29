@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -7,27 +7,34 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-import re
+"""
+Type proxies for using builtin Python datatypes as primitive XSD datatypes.
+A proxy class creates and validates a Python datatype and can be used for
+checking instances of XSD primitive and derived types registered as virtual
+subclasses.
+"""
 import math
 from decimal import Decimal
-from typing import Any, Union, SupportsFloat
+from typing import Any, cast, NoReturn
 
-from elementpath.helpers import BOOLEAN_VALUES, collapse_white_spaces, get_double
-from .atomic_types import AnyAtomicType
+from elementpath.aliases import XPath2ParserType
+from elementpath.helpers import BOOLEAN_VALUES, FloatArgType, LazyPattern, \
+    collapse_white_spaces, get_double
+from .any_types import AnyAtomicType
 from .untyped import UntypedAtomic
-from .numeric import Float10, Integer
+from .numeric import Float, Integer
 from .datetime import AbstractDateTime, Duration
 
-FloatArgType = Union[SupportsFloat, str, bytes]
-
-####
-# type proxies for basic Python datatypes: a proxy class creates
-# and validates its Python datatype and virtual registered types.
+__all__ = ['BooleanProxy', 'DecimalProxy', 'DoubleProxy', 'DoubleProxy10',
+           'StringProxy', 'NumericProxy', 'ArithmeticProxy', 'ErrorProxy']
 
 
 class BooleanProxy(AnyAtomicType):
+    """
+    Proxy class for xs:boolean builtin datatype. Builds instances as <class 'bool'>.`.
+    """
     name = 'boolean'
-    pattern = re.compile(r'^(?:true|false|1|0)$')
+    pattern = LazyPattern(r'^(?:true|false|1|0)$')
 
     def __new__(cls, value: object) -> bool:  # type: ignore[misc]
         if isinstance(value, bool):
@@ -58,23 +65,26 @@ class BooleanProxy(AnyAtomicType):
             return
         elif isinstance(value, str):
             if cls.pattern.match(value) is None:
-                raise cls.invalid_value(value)
+                raise cls._invalid_value(value)
         else:
-            raise cls.invalid_type(value)
+            raise cls._invalid_type(value)
 
 
 class DecimalProxy(AnyAtomicType):
+    """
+    Proxy class for xs:decimal builtin datatype. Builds instances as `decimal.Decimal`.
+    """
     name = 'decimal'
-    pattern = re.compile(r'^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$')
+    pattern = LazyPattern(r'^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$')
 
     def __new__(cls, value: Any) -> Decimal:  # type: ignore[misc]
         if isinstance(value, (str, UntypedAtomic)):
             value = collapse_white_spaces(str(value)).replace(' ', '')
             if cls.pattern.match(value) is None:
-                raise cls.invalid_value(value)
-        elif isinstance(value, (float, Float10, Decimal)):
+                raise cls._invalid_value(value)
+        elif isinstance(value, (float, Float, Decimal)):
             if math.isinf(value) or math.isnan(value):
-                raise cls.invalid_value(value)
+                raise cls._invalid_value(value)
         try:
             return Decimal(value)
         except (ValueError, ArithmeticError):
@@ -90,52 +100,71 @@ class DecimalProxy(AnyAtomicType):
 
     @classmethod
     def validate(cls, value: object) -> None:
-        if isinstance(value, Decimal):
-            if math.isnan(value) or math.isinf(value):
-                raise cls.invalid_value(value)
-        elif isinstance(value, (int, Integer)) and not isinstance(value, bool):
-            return
-        elif isinstance(value, str):
-            if cls.pattern.match(value) is None:
-                raise cls.invalid_value(value)
-        else:
-            raise cls.invalid_type(value)
+        match value:
+            case Decimal():
+                if math.isnan(value) or math.isinf(value):
+                    raise cls._invalid_value(value)
+            case bool():
+                raise cls._invalid_type(value)
+            case int() | Integer():
+                return
+            case str():
+                if cls.pattern.match(value) is None:
+                    raise cls._invalid_value(value)
+            case _:
+                raise cls._invalid_type(value)
 
 
-class DoubleProxy10(AnyAtomicType):
+class DoubleProxy(AnyAtomicType):
+    """
+    Proxy class for xs:double builtin datatype. Builds instances as <class 'float'>.`.
+    """
     name = 'double'
-    xsd_version = '1.0'
-    pattern = re.compile(
+    pattern = LazyPattern(
         r'^(?:[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?|[+-]?INF|NaN)$'
     )
 
-    def __new__(cls, value: Union[SupportsFloat, str]) -> float:  # type: ignore[misc]
-        return get_double(value, cls.xsd_version)
+    @classmethod
+    def make(cls, value: Any,
+             parser: XPath2ParserType | None = None,
+             **kwargs: Any) -> 'float':
+        if cls.__name__.endswith('10'):
+            return get_double(value, '1.0')
+        elif parser is not None:
+            return get_double(value, parser.xsd_version)
+        else:
+            return get_double(value, kwargs.get('xsd_version'))
 
-    def __init__(self, value: Union[SupportsFloat, str]) -> None:
+    def __new__(cls, value: FloatArgType) -> float:  # type: ignore[misc]
+        return get_double(value)
+
+    def __init__(self, value: FloatArgType) -> None:
         float.__init__(self)
 
     @classmethod
     def __subclasshook__(cls, subclass: type) -> bool:
-        return issubclass(subclass, float) and not issubclass(subclass, Float10)
+        return issubclass(subclass, float) and not issubclass(subclass, Float)
 
     @classmethod
     def validate(cls, value: object) -> None:
-        if isinstance(value, float) and not isinstance(value, Float10):
+        if isinstance(value, float) and not isinstance(value, Float):
             return
         elif isinstance(value, str):
             if cls.pattern.match(value) is None:
-                raise cls.invalid_value(value)
+                raise cls._invalid_value(value)
         else:
-            raise cls.invalid_type(value)
+            raise cls._invalid_type(value)
 
 
-class DoubleProxy(DoubleProxy10):
-    name = 'double'
-    xsd_version = '1.1'
+class DoubleProxy10(DoubleProxy):
+    def __new__(cls, value: FloatArgType) -> float:  # type: ignore[misc]
+        return get_double(value, '1.0')
 
 
 class StringProxy(AnyAtomicType):
+    """
+    Proxy class for xs:string builtin datatype. Builds instances as <class 'str'>.`.
+    """
     name = 'string'
 
     def __new__(cls, *args: object, **kwargs: object) -> str:  # type: ignore[misc]
@@ -151,7 +180,7 @@ class StringProxy(AnyAtomicType):
     @classmethod
     def validate(cls, value: object) -> None:
         if not isinstance(value, str):
-            raise cls.invalid_type(value)
+            raise cls._invalid_type(value)
 
 
 ####
@@ -197,3 +226,19 @@ class ArithmeticProxy(metaclass=ArithmeticTypeMeta):
 
     def __new__(cls, *args: FloatArgType, **kwargs: FloatArgType) -> float:  # type: ignore[misc]
         return float(*args, **kwargs)
+
+
+class ErrorProxy(AnyAtomicType):
+    """Class for XPath xs:error datatype. Accepts `None` or an empty sequence."""
+    name = 'error'
+
+    def __new__(cls, value: Any) -> list[NoReturn] | None:  # type: ignore[misc]
+        if value is None or value == []:
+            return cast(list[NoReturn] | None, value)
+        msg = f"Cast {value!r} to xs:error is not possible"
+        if isinstance(value, list):
+            raise cls._invalid_value(msg)
+        raise cls._invalid_type(msg)
+
+    def __init__(self, value: Any) -> None:
+        pass

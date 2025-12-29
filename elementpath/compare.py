@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2022, SISSA (International School for Advanced Studies).
+# Copyright (c), 2022-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -171,10 +171,6 @@ def deep_equal(seq1: Iterable[Any],
     return True
 
 
-def is_empty_sequence(x: Any) -> bool:
-    return not x and isinstance(x, list)
-
-
 def deep_compare(obj1: Any,
                  obj2: Any,
                  collation: Optional[str] = None,
@@ -187,7 +183,7 @@ def deep_compare(obj1: Any,
     def iter_object(obj: Any) -> Iterator[Any]:
         if isinstance(obj, XPathArray):
             yield from obj.items()
-        elif isinstance(obj, (list, Iterator)):
+        elif isinstance(obj, list):
             yield from obj
         else:
             yield obj
@@ -241,11 +237,13 @@ def deep_compare(obj1: Any,
                     not isinstance(value2, XPathArray):
                 raise xpath_error('FOTY0013', token=token)
 
-            if (value1 is None) ^ (value2 is None):
-                return -1 if value1 is None else 1
+            if value1 is None or value1 == []:
+                if value2 is not None and value2 != []:
+                    return -1
 
-            if is_empty_sequence(value1) ^ is_empty_sequence(value2):
-                return -1 if is_empty_sequence(value1) else 1
+            if value2 is None or value2 == []:
+                if value1 is not None and value1 != []:
+                    return 1
 
             if isinstance(value1, XPathNode) ^ isinstance(value2, XPathNode):
                 msg = f"cannot compare {type(value1)} with {type(value2)}"
@@ -371,12 +369,12 @@ def get_key_function(collation: Optional[str] = None,
 
     def compare_func(obj1: Any, obj2: Any) -> int:
         if key_func is not None:
-            if isinstance(obj1, (list, Iterator)):
+            if isinstance(obj1, list):
                 obj1 = map(key_func, obj1)
             else:
                 obj1 = key_func(obj1)
 
-            if isinstance(obj2, (list, Iterator)):
+            if isinstance(obj2, list):
                 obj2 = map(key_func, obj2)
             else:
                 obj2 = key_func(obj2)

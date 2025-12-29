@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -161,12 +161,12 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
             value=217.35
         )
         self.check_token(
-            '(name)', 'literal', "'schema' name",
+            '(name)', 'name', "'schema' name",
             value='schema'
         )
 
         # Variables
-        self.check_token('$', 'operator', "$ variable reference")
+        self.check_token('$', 'variable', "unparsed variable reference")
 
         # Axes
         self.check_token('self', 'axis', "'self' axis")
@@ -600,11 +600,8 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         self.check_value('$word', 'alpha', context)
         self.wrong_syntax('${http://xpath.test/ns}word', 'XPST0003')
 
-        if self.parser.version == '1.0':
-            self.wrong_syntax('$eg:word', 'variable reference requires a simple reference name')
-        else:
-            context = XPathContext(root, variables={'eg:color': 'purple'})
-            self.check_value('$eg:color', 'purple', context)
+        context = XPathContext(root, variables={'eg:color': 'purple'})
+        self.check_value('$eg:color', 'purple', context)
 
     def test_substring_function(self):
         root = self.etree.XML(XML_GENERIC_TEST)
@@ -881,7 +878,7 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         document = self.etree.ElementTree(root)
         self.check_selector('lang("en")', root, True)
         if self.parser.version > '1.0':
-            self.check_selector('para/lang("en")', root, True)
+            self.check_selector('para/lang("en")', root, [True])
             context = XPathContext(root)
             self.check_value('for $x in . return $x/fn:lang(())',
                              expected=[False], context=context)
@@ -893,8 +890,8 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         root = self.etree.XML('<a><b><c/></b></a>')
         self.check_selector('lang("en")', root, False)
         if self.parser.version > '1.0':
-            self.check_selector('b/c/lang("en")', root, False)
-            self.check_selector('b/c/lang("en", .)', root, False)
+            self.check_selector('b/c/lang("en")', root, [False])
+            self.check_selector('b/c/lang("en", .)', root, [False])
         else:
             context = XPathContext(root, item=root[0][0])
             self.check_value('lang("en")', False, context=context)
@@ -1281,10 +1278,10 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         document = self.etree.ElementTree(root)
 
         context = XPathContext(root)
-        self.check_value('.', [context.root], context=context)
+        self.check_value('.', context.root, context=context)
 
         context = XPathContext(root=document)
-        self.check_value('.', [context.root], context=context)
+        self.check_value('.', context.root, context=context)
 
     def test_self_axis(self):
         root = self.etree.XML('<A>A text<B1>B1 text</B1><B2/><B3>B3 text</B3></A>')
@@ -1610,9 +1607,9 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
         if self.parser.version == '1.0':
             self.assertEqual(len(self.parser.function_signatures), 36)
         elif self.parser.version == '2.0':
-            self.assertEqual(len(self.parser.function_signatures), 151)
+            self.assertEqual(len(self.parser.function_signatures), 147)
         elif self.parser.version == '3.0':
-            self.assertEqual(len(self.parser.function_signatures), 221)
+            self.assertEqual(len(self.parser.function_signatures), 217)
 
         for key, value in self.parser.function_signatures.items():
             self.assertIsInstance(key, tuple)
@@ -1667,11 +1664,11 @@ class XPath1ParserTest(xpath_test_class.XPathTestCase):
 
         xpath_expr = '//descendant-or-self::text()'
         chunks = select(root, xpath_expr)
-        self.assertListEqual(chunks, ['Achille Compagnoni ', ' and ', 'Lino Lacedelli'])
+        self.assertEqual(chunks, ['Achille Compagnoni ', ' and ', 'Lino Lacedelli'])
 
         xpath_expr = '//text()'
         chunks = select(root, xpath_expr)
-        self.assertListEqual(chunks, ['Achille Compagnoni ', ' and ', 'Lino Lacedelli'])
+        self.assertEqual(chunks, ['Achille Compagnoni ', ' and ', 'Lino Lacedelli'])
 
     def test_get_function(self):
         func = self.parser.get_function('fn:true', 0)

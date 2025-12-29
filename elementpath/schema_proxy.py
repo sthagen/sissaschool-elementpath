@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -15,10 +15,9 @@ from typing import Any, Optional, Union
 from elementpath.exceptions import ElementPathTypeError
 from elementpath.protocols import XsdTypeProtocol, XsdAttributeProtocol, \
     XsdElementProtocol, XsdSchemaProtocol
-from elementpath.datatypes import AtomicType
+from elementpath.aliases import AtomicType, XPath2ParserType
 from elementpath.etree import is_etree_element
 from elementpath.xpath_context import XPathSchemaContext
-from elementpath.xpath_tokens import XPath2ParserType
 
 PathResult = Union[XsdSchemaProtocol, XsdElementProtocol, XsdAttributeProtocol]
 FindAttrType = Optional[XsdAttributeProtocol]
@@ -78,7 +77,7 @@ class AbstractSchemaProxy(metaclass=ABCMeta):
         self._is_fully_valid = self.validity == 'valid' and self.validation_attempted == 'full'
         return self._is_fully_valid
 
-    def bind_parser(self, parser: 'XPath2ParserType') -> None:
+    def bind_parser(self, parser: XPath2ParserType) -> None:
         """
         Binds a parser instance with schema proxy adding the schema's atomic types constructors.
         This method can be redefined in a concrete proxy to optimize schema bindings.

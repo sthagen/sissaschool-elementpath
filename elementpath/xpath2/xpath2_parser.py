@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -17,15 +17,16 @@ from collections.abc import Callable, MutableMapping
 from urllib.parse import urlparse
 from typing import cast, Any, ClassVar, Optional, Union
 
-from elementpath.aliases import NamespacesType, NargsType
+import elementpath.aliases as ta
+
 from elementpath.helpers import upper_camel_case, is_ncname, ordinal
-from elementpath.exceptions import ElementPathError, ElementPathTypeError, \
+from elementpath.exceptions import ElementPathTypeError, \
     ElementPathValueError, MissingContextError, xpath_error
-from elementpath.namespaces import XSD_NAMESPACE, XML_NAMESPACE, \
-    XPATH_FUNCTIONS_NAMESPACE, XQT_ERRORS_NAMESPACE, \
-    XSD_NOTATION, XSD_ANY_ATOMIC_TYPE, get_prefixed_name
+from elementpath.namespaces import XML_NAMESPACE, XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, \
+    XQT_ERRORS_NAMESPACE, XSD_NOTATION, XSD_ANY_ATOMIC_TYPE
+from elementpath.namespaces import get_prefixed_name
+from elementpath.datatypes import QName, builtin_atomic_types
 from elementpath.collations import UNICODE_COLLATION_BASE_URI, UNICODE_CODEPOINT_COLLATION
-from elementpath.datatypes import UntypedAtomic, AtomicType, QName
 from elementpath.xpath_tokens import XPathToken, ProxyToken, XPathFunction, XPathConstructor
 from elementpath.xpath_context import XPathContext, XPathSchemaContext
 from elementpath.sequence_types import is_sequence_type, match_sequence_type
@@ -93,23 +94,24 @@ class XPath2Parser(XPath1Parser):
         'schema-element', 'text', 'typeswitch',
     }
 
-    function_signatures: dict[tuple[QName, int], str] = XPath1Parser.function_signatures.copy()
+    function_signatures: dict[tuple[QName, int], str] \
+        = XPath1Parser.function_signatures.copy()
     namespaces: dict[str, str]
     token: XPathToken
     next_token: XPathToken
 
-    def __init__(self, namespaces: Optional[NamespacesType] = None,
+    def __init__(self, namespaces: ta.NamespacesType | None = None,
                  strict: bool = True,
                  compatibility_mode: bool = False,
-                 default_collation: Optional[str] = None,
-                 default_namespace: Optional[str] = None,
-                 function_namespace: Optional[str] = None,
-                 xsd_version: Optional[str] = None,
-                 schema: Optional[AbstractSchemaProxy] = None,
-                 base_uri: Optional[str] = None,
-                 variable_types: Optional[dict[str, str]] = None,
-                 document_types: Optional[dict[str, str]] = None,
-                 collection_types: Optional[NamespacesType] = None,
+                 default_collation: str | None = None,
+                 default_namespace: str | None = None,
+                 function_namespace: str | None = None,
+                 xsd_version: str | None = None,
+                 schema: AbstractSchemaProxy | None = None,
+                 base_uri: str | None = None,
+                 variable_types: dict[str, str] | None = None,
+                 document_types: dict[str, str] | None = None,
+                 collection_types: ta.NamespacesType | None = None,
                  default_collection_type: str = 'node()*') -> None:
 
         super(XPath2Parser, self).__init__(namespaces, strict)
@@ -215,7 +217,7 @@ class XPath2Parser(XPath1Parser):
         except (AttributeError, NotImplementedError):
             return self._xsd_version
 
-    def advance(self, *symbols: str,  message: Optional[str] = None) -> XPathToken:
+    def advance(self, *symbols: str,  message: str | None = None) -> XPathToken:
         super(XPath2Parser, self).advance(*symbols, message=message)
 
         if self.next_token.symbol == '(:':
@@ -241,7 +243,7 @@ class XPath2Parser(XPath1Parser):
         return self.token
 
     @classmethod
-    def constructor(cls, symbol: str, bp: int = 90, nargs: NargsType = 1,
+    def constructor(cls, symbol: str, bp: int = 90, nargs: ta.NargsType = 1,
                     sequence_types: Union[tuple[()], tuple[str, ...], list[str]] = (),
                     label: Union[str, tuple[str, ...]] = 'constructor function') \
             -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -249,58 +251,27 @@ class XPath2Parser(XPath1Parser):
         Statically creates a constructor token class, that is registered in the globals
         of the module where the method is called.
         """
-        def nud_(self: XPathConstructor) -> XPathConstructor:
-            if not self.parser.parse_arguments:
-                return self
-
-            try:
-                self.parser.advance('(')
-                self[0:] = self.parser.expression(5),
-                if self.parser.next_token.symbol == ',':
-                    msg = 'Too many arguments: expected at most 1 argument'
-                    raise self.error('XPST0017', msg)
-                self.parser.advance(')')
-            except SyntaxError:
-                raise self.error('XPST0017') from None
-            else:
-                if self[0].symbol == '?':
-                    self.to_partial_function()
-                return self
-
-        def evaluate_(self: XPathConstructor, context: Optional[XPathContext] = None) \
-                -> Union[list[None], AtomicType]:
-            if self.context is not None:
-                context = self.context
-
-            arg = self.data_value(self.get_argument(context))
-            if arg is None:
-                return []
-            elif arg == '?' and self[0].symbol == '?':
-                raise self.error('XPTY0004', "cannot evaluate a partial function")
-
-            try:
-                if isinstance(arg, UntypedAtomic):
-                    return self.cast(arg.value)
-                return self.cast(arg)
-            except ElementPathError:
-                raise
-            except (TypeError, ValueError) as err:
-                if isinstance(context, XPathSchemaContext):
-                    return []
-                raise self.error('FORG0001', err) from None
-
         if not sequence_types:
             assert nargs == 1
             sequence_types = ('xs:anyAtomicType?', 'xs:%s?' % symbol)
 
-        token_class = cls.register(symbol, nargs=nargs, sequence_types=sequence_types,
-                                   label=label, bases=(XPathConstructor,), lbp=bp, rbp=bp,
-                                   nud=nud_, evaluate=evaluate_)
+        type_name = f'{{{XSD_NAMESPACE}}}{symbol}'
+        kwargs = {
+            'bases': (XPathConstructor,),
+            'label': label,
+            'nargs': nargs,
+            'lbp': bp,
+            'rbp': bp,
+            'sequence_types': sequence_types,
+            'name': type_name,
+            'type_class': builtin_atomic_types.get(type_name),
+        }
+        token_class = cls.register(symbol, **kwargs)
 
         def bind(func: Callable[..., Any]) -> Callable[..., Any]:
             method_name = func.__name__.partition('_')[0]
             if method_name != 'cast':
-                raise ValueError("The function name must be 'cast' or starts with 'cast_'")
+                raise ValueError("The function name must be 'cast' or starting with 'cast_'")
             setattr(token_class, method_name, func)
             return func
         return bind
@@ -322,8 +293,8 @@ class XPath2Parser(XPath1Parser):
                 pass
             return self_
 
-        def evaluate_(self_: XPathFunction, context: Optional[XPathContext] = None) \
-                -> Union[list[None], AtomicType]:
+        def evaluate_(self_: XPathFunction, context: XPathContext | None = None) \
+                -> ta.OneAtomicOrEmpty:
             arg = self_.get_argument(context)
             if arg is None or self_.parser.schema is None:
                 return []
@@ -364,8 +335,8 @@ class XPath2Parser(XPath1Parser):
 
     def external_function(self,
                           callback: Callable[..., Any],
-                          name: Optional[str] = None,
-                          prefix: Optional[str] = None,
+                          name: str | None = None,
+                          prefix: str | None = None,
                           sequence_types: tuple[str, ...] = (),
                           bp: int = 90) -> type[XPathFunction]:
         """Registers a token class for an external function."""
@@ -377,7 +348,7 @@ class XPath2Parser(XPath1Parser):
         elif symbol in self.RESERVED_FUNCTION_NAMES:
             raise ElementPathValueError(f'{symbol!r} is a reserved function name')
 
-        nargs: NargsType
+        nargs: ta.NargsType
         spec = inspect.getfullargspec(callback)
         if spec.varargs is not None:
             if spec.args:
@@ -534,7 +505,6 @@ class XPath2Parser(XPath1Parser):
 # Remove symbols that have to be redefined for XPath 2.0.
 XPath2Parser.unregister(',')
 XPath2Parser.unregister('(')
-XPath2Parser.unregister('$')
 XPath2Parser.unregister('contains')
 XPath2Parser.unregister('lang')
 XPath2Parser.unregister('id')

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -37,10 +37,11 @@ import lxml.etree
 import xmlschema
 
 from elementpath import ElementPathError, XPath2Parser, XPathContext, XPathNode, \
-    CommentNode, ProcessingInstructionNode, get_node_tree
+    CommentNode, ProcessingInstructionNode, get_node_tree, XPathFunction
 from elementpath.namespaces import XML_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, get_expanded_name
-from elementpath.xpath_tokens import XPathFunction, XPathMap, XPathArray
+from elementpath.xpath_tokens import XPathMap, XPathArray
 from elementpath.datatypes import AnyAtomicType
+from elementpath.sequences import XSequence
 from elementpath.sequence_types import is_sequence_type, match_sequence_type
 from elementpath.xpath31 import XPath31Parser
 from elementpath.xpath_nodes import EtreeElementNode
@@ -252,7 +253,7 @@ def working_directory(dirpath):
 def get_context_result(item):
     if isinstance(item, XPathNode):
         raise TypeError("Unexpected XPath node in external results")
-    elif isinstance(item, (list, tuple)):
+    elif isinstance(item, (list, XSequence)):
         return [get_context_result(x) for x in item]
     elif hasattr(item, 'tag'):
         if callable(item.tag):
@@ -1002,7 +1003,7 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        if isinstance(result, list) and len(result) == 1:
+        if isinstance(result, (list, XSequence)) and len(result) == 1:
             result = result[0]
 
         parser = xpath_parser(xsd_version=self.test_case.xsd_version)
@@ -1031,7 +1032,7 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        if isinstance(result, list) and len(result) == 1:
+        if isinstance(result, (list, XSequence)) and len(result) == 1:
             result = result[0]
 
         parser = xpath_parser(namespaces={'j': XPATH_FUNCTIONS_NAMESPACE})
@@ -1063,7 +1064,7 @@ class Result(object):
             return False
 
         context = XPathContext(self.etree.XML("<empty/>"), variables={'result': result})
-        if isinstance(result, list):
+        if isinstance(result, (list, XSequence)):
             value = self.string_join_token.evaluate(context)
         else:
             value = self.string_token.evaluate(context)
@@ -1133,7 +1134,8 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
         else:
-            if result is True or isinstance(result, list) and result and result[0] is True:
+            if result is True or isinstance(result, (list, XSequence)) \
+                    and result and result[0] is True:
                 return True
 
             self.report_failure(verbose)
@@ -1147,7 +1149,8 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
         else:
-            if result is False or isinstance(result, list) and result and result[0] is False:
+            if result is False or isinstance(result, (list, XSequence)) \
+                    and result and result[0] is False:
                 return True
 
             self.report_failure(verbose)
@@ -1161,7 +1164,7 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        if isinstance(result, (AnyAtomicType, XPathArray, XPathMap)):
+        if isinstance(result, (AnyAtomicType, XPathFunction)):
             length = 1
         else:
             try:
@@ -1209,7 +1212,7 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        if isinstance(result, list) and len(result) == 1:
+        if isinstance(result, (list, XSequence)) and len(result) == 1:
             result = result[0]
 
         expression = "fn:deep-equal($result, (%s))" % self.value
@@ -1245,11 +1248,11 @@ class Result(object):
             self.report_failure(verbose, error=err)
             return False
 
-        if not isinstance(result, list):
+        if not isinstance(result, (list, XSequence)):
             result = [result]
 
         expected = xpath_parser().parse(self.value).evaluate()
-        if not isinstance(expected, list):
+        if not isinstance(expected, (list, XSequence)):
             expected = [expected]
 
         if set(expected) == set(result):
@@ -1335,7 +1338,7 @@ class Result(object):
             with open(self.attrib['file']) as fp:
                 expected = fp.read()
 
-        if isinstance(result, list):
+        if isinstance(result, (list, XSequence)):
             parts = []
             for item in result:
                 if isinstance(item, EtreeElementNode):
@@ -1410,7 +1413,7 @@ def main():
     global xpath_parser
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('catalog', metavar='CATALOG_FILE',
+    parser.add_argument('--catalog', metavar='CATALOG_FILE',
                         nargs='?', default='../qt3tests/catalog.xml',
                         help='the path to the main index file of test suite (catalog.xml)')
     parser.add_argument('pattern', nargs='?', default='.*', metavar='PATTERN',

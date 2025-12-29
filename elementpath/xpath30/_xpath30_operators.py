@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -14,12 +14,11 @@ from copy import copy
 from collections.abc import Iterator
 from typing import Any, cast, Union
 
-from elementpath.aliases import InputType
-from elementpath.namespaces import XPATH_FUNCTIONS_NAMESPACE, XSD_NAMESPACE
+import elementpath.aliases as ta
+import elementpath.namespaces as ns
+from elementpath.datatypes import QName
 from elementpath.xpath_tokens import XPathToken, ValueToken, XPathFunction, \
     XPathMap, XPathArray
-from elementpath.xpath_context import ContextType, ItemType
-from elementpath.datatypes import QName
 
 from .xpath30_parser import XPath30Parser
 
@@ -39,12 +38,12 @@ register('?', bases=(ValueToken,))
 
 
 @method('?')
-def nud_placeholder_symbol(self: ValueToken) -> ValueToken:
+def nud__placeholder_symbol(self: ValueToken) -> ValueToken:
     return self
 
 
 @method('?')
-def evaluate_placeholder_symbol(self: ValueToken, context: ContextType = None) -> ValueToken:
+def evaluate__placeholder_symbol(self: ValueToken, context: ta.ContextType = None) -> ValueToken:
     return self
 
 
@@ -62,7 +61,7 @@ XPath30Parser.unregister('(')
 
 
 @method(register('(', lbp=80, rpb=80, label='expression'))
-def nud_parenthesized_expression(self: XPathToken) -> XPathToken:
+def nud__parenthesized_expression(self: XPathToken) -> XPathToken:
     if self.parser.next_token.symbol != ')':
         self[:] = self.parser.expression(),
     self.parser.advance(')')
@@ -70,7 +69,7 @@ def nud_parenthesized_expression(self: XPathToken) -> XPathToken:
 
 
 @method('(')
-def led_parenthesized_expression(self: XPathToken, left: XPathToken) -> XPathToken:
+def led__parenthesized_expression(self: XPathToken, left: XPathToken) -> XPathToken:
     if left.symbol in ('(name)', 'Q{'):
         if left.value in self.parser.RESERVED_FUNCTION_NAMES:
             msg = f"{left.value!r} is not allowed as function name"
@@ -79,7 +78,7 @@ def led_parenthesized_expression(self: XPathToken, left: XPathToken) -> XPathTok
             raise left.error('XPST0017', 'unknown function {!r}'.format(left.value))
 
     elif left.symbol == ':' and left[1].symbol == '(name)':
-        if left[1].namespace == XSD_NAMESPACE:
+        if left[1].namespace == ns.XSD_NAMESPACE:
             msg = 'unknown constructor function {!r}'.format(left[1].value)
             raise left[1].error('XPST0017', msg)
         raise left.error('XPST0017', 'unknown function {!r}'.format(left.value))
@@ -93,12 +92,13 @@ def led_parenthesized_expression(self: XPathToken, left: XPathToken) -> XPathTok
 
 
 @method('(')
-def evaluate_parenthesized_expression(self: XPathToken, context: ContextType = None) \
-        -> Union[ItemType, list[ItemType], XPathToken]:
+def evaluate__parenthesized_expression(self: XPathToken, context: ta.ContextType = None) \
+        -> ta.ValueType | XPathToken:
     if not self:
         return []
 
     value = self[0].evaluate(context)
+
     if isinstance(value, list) and len(value) == 1:
         value = value[0]
 
@@ -115,8 +115,7 @@ def evaluate_parenthesized_expression(self: XPathToken, context: ContextType = N
                 func.to_partial_function()
                 return func
 
-            arguments: list[InputType[ItemType]]
-            arguments = [tk.evaluate(context) for tk in tokens]
+            arguments: list[ta.ValueType] = [tk.evaluate(context) for tk in tokens]
 
             if func.label == 'partial function' and func[0].symbol == '?' and len(func[0]):
                 if context is None:
@@ -144,28 +143,28 @@ def evaluate_parenthesized_expression(self: XPathToken, context: ContextType = N
 
 
 @method(infix('||', bp=32))
-def evaluate_union_operator(self: XPathToken, context: ContextType = None) -> str:
+def evaluate__union_operator(self: XPathToken, context: ta.ContextType = None) -> str:
 
     return self.string_value(self.get_argument(context)) + \
         self.string_value(self.get_argument(context, index=1))
 
 
 @method(infix('!', bp=72))
-def select_simple_map_operator(self: XPathToken, context: ContextType = None) \
-        -> Iterator[ItemType]:
+def select__simple_map_operator(self: XPathToken, context: ta.ContextType = None) \
+        -> Iterator[ta.ItemType]:
     if context is None:
         raise self.missing_context()
 
-    for context.item in context.inner_focus_select(self[0]):
-        for result in self[1].select(copy(context)):
+    for context.item in self[0].select_with_focus(context):
+        for result in self[1].select(context):
             yield result
 
 
 ###
 # 'let' expressions
 
-@method(register('let', lbp=20, rbp=20, label='let expression'))
-def nud_let_expression(self: XPathToken) -> XPathToken:
+@method('let', bp=20, label='expression')
+def nud__let_expression(self: XPathToken) -> XPathToken:
     del self[:]
     if self.parser.next_token.symbol != '$':
         return self.as_name()
@@ -187,10 +186,13 @@ def nud_let_expression(self: XPathToken) -> XPathToken:
 
 
 @method('let')
-def select_let_expression(self: XPathToken, context: ContextType = None) \
-        -> Iterator[ItemType]:
+def select__let_expression(self: XPathToken, context: ta.ContextType = None) \
+        -> Iterator[ta.ItemType]:
     if context is None:
         raise self.missing_context()
+
+    context = copy(context)
+    context.variables = context.variables.copy()
 
     for k in range(0, len(self) - 1, 2):
         varname = cast(str, self[k][0].value)
@@ -201,7 +203,7 @@ def select_let_expression(self: XPathToken, context: ContextType = None) \
 
 
 @method('#', bp=90)
-def led_function_reference(self: XPathToken, left: XPathToken) -> XPathToken:
+def led__function_reference(self: XPathToken, left: XPathToken) -> XPathToken:
     if not left.label.endswith('function'):
         left.expected(':', '(name)', 'Q{')
 
@@ -211,7 +213,7 @@ def led_function_reference(self: XPathToken, left: XPathToken) -> XPathToken:
 
 
 @method('#')
-def evaluate_function_reference(self: XPathToken, context: ContextType = None) -> XPathFunction:
+def evaluate__function_reference(self: XPathToken, context: ta.ContextType = None) -> XPathFunction:
     token_class: type[Union[XPathFunction, XPathToken]]
     namespace: Any
     name: Any
@@ -235,7 +237,7 @@ def evaluate_function_reference(self: XPathToken, context: ContextType = None) -
             namespace = self[0][0].value
             name = self[0][1].value
         elif self[0].value not in self.parser.RESERVED_FUNCTION_NAMES:
-            namespace = XPATH_FUNCTIONS_NAMESPACE
+            namespace = ns.XPATH_FUNCTIONS_NAMESPACE
             name = self[0].value
         else:
             msg = f"{self[0].value!r} is not allowed as function name"
@@ -248,11 +250,11 @@ def evaluate_function_reference(self: XPathToken, context: ContextType = None) -
         local_name = qname.local_name
 
         # Generic rule for XSD constructor functions
-        if namespace == XSD_NAMESPACE and arity != 1:
+        if namespace == ns.XSD_NAMESPACE and arity != 1:
             raise self.error('XPST0017', f"unknown function {qname.qname}#{arity}")
 
         # Special checks for multirole tokens
-        if namespace == XPATH_FUNCTIONS_NAMESPACE and \
+        if namespace == ns.XPATH_FUNCTIONS_NAMESPACE and \
                 local_name in ('QName', 'dateTime') and arity == 1:
             raise self.error('XPST0017', f"unknown function {qname.qname}#{arity}")
 

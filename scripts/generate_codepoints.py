@@ -86,7 +86,7 @@ UNICODE_CATEGORIES = (
 )
 
 
-DEFAULT_CATEGORIES_VERSIONS = ['12.1.0', '13.0.0', '14.0.0', '15.0.0', '15.1.0', '16.0.0', '17.0.0']
+DEFAULT_CATEGORIES_VERSIONS = ['13.0.0', '14.0.0', '15.0.0', '15.1.0', '16.0.0', '17.0.0']
 
 
 def version_number(value):

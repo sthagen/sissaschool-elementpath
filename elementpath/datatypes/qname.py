@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -7,25 +7,49 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-import re
-from typing import Any, Optional
+from typing import Any, Optional, cast, TypeVar
 
-from .atomic_types import AnyAtomicType
+from elementpath.aliases import XPathParserType
+from elementpath.helpers import LazyPattern
+from .any_types import AnyAtomicType
 from .untyped import UntypedAtomic
+
+__all__ = ['AbstractQName', 'QName', 'Notation']
+
+T = TypeVar('T', bound='AbstractQName')
 
 
 class AbstractQName(AnyAtomicType):
     """
     XPath compliant QName, bound with a prefix and a namespace.
-
-    :param uri: the bound namespace URI, must be a not empty \
-    URI if a prefixed name is provided for the 2nd argument.
-    :param qname: the prefixed name or a local name.
     """
-    pattern = re.compile(
+    pattern = LazyPattern(
         r'^(?:(?P<prefix>[^\d\W][\w\-.\u00B7\u0300-\u036F\u0387\u06DD\u06DE\u203F\u2040]*):)?'
         r'(?P<local>[^\d\W][\w\-.\u00B7\u0300-\u036F\u0387\u06DD\u06DE\u203F\u2040]*)$',
     )
+
+    @classmethod
+    def make(cls: type[T], value: Any,
+             namespaces: dict[str, str] | None = None,
+             parser: XPathParserType | None = None,
+             **kwargs: Any) -> T:
+
+        if isinstance(value, AbstractQName):
+            return cast(T, value)
+        elif isinstance(value, UntypedAtomic) and parser and parser.version >= '3.0':
+            value = value.value
+        elif not isinstance(value, str):
+            raise cls._invalid_type(value)
+
+        if namespaces is None:
+            namespaces = parser.namespaces if parser is not None else {}
+
+        if ':' not in value:
+            return cls(namespaces.get(''), value)
+        else:
+            return cls(namespaces[value[0:value.index(':')]], value)
+
+    __slots__ = ('uri', 'qname', 'prefix', 'local_name')
 
     def __new__(cls, *args: Any, **kwargs: Any) -> 'AbstractQName':
         if cls.__name__ == 'Notation':
@@ -33,6 +57,11 @@ class AbstractQName(AnyAtomicType):
         return super().__new__(cls)
 
     def __init__(self, uri: Optional[str], qname: str) -> None:
+        """
+        :param uri: the bound namespace URI, must be a not empty \
+        URI if a prefixed name is provided for the 2nd argument.
+        :param qname: a prefixed name or a local name.
+        """
         if uri is None:
             self.uri = ''
         elif isinstance(uri, str):
@@ -58,6 +87,10 @@ class AbstractQName(AnyAtomicType):
     def namespace(self) -> str:
         return self.uri
 
+    @namespace.setter
+    def namespace(self, uri: str) -> None:
+        self.uri = uri
+
     @property
     def expanded_name(self) -> str:
         return '{%s}%s' % (self.uri, self.local_name) if self.uri else self.local_name
@@ -80,7 +113,7 @@ class AbstractQName(AnyAtomicType):
             return self.uri == other.uri and self.local_name == other.local_name
         elif isinstance(other, (str, UntypedAtomic)):
             return other == self.qname
-        raise TypeError("cannot compare {!r} to {!r}".format(type(self), type(other)))
+        return NotImplemented
 
 
 class QName(AbstractQName):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -116,14 +116,14 @@ class TdopParserTest(unittest.TestCase):
             self.assertIn(r"(\{http\:\/\/www\.w3\.org\/2000\/09\/xmldsig\#\}", pattern.pattern)
 
     def test_tokenizer_items(self):
-        self.assertListEqual(self.parser.tokenizer.findall('5 56'),
-                             [('5', '', '', ''), ('', '', '', ''), ('56', '', '', '')])
-        self.assertListEqual(self.parser.tokenizer.findall('5+56'),
-                             [('5', '', '', ''), ('', '+', '', ''), ('56', '', '', '')])
-        self.assertListEqual(self.parser.tokenizer.findall('xy'),
-                             [('', '', 'xy', '')])
-        self.assertListEqual(self.parser.tokenizer.findall('5x'),
-                             [('5', '', '', ''), ('', '', 'x', '')])
+        self.assertEqual(self.parser.tokenizer.findall('5 56'),
+                         [('5', '', '', ''), ('', '', '', ''), ('56', '', '', '')])
+        self.assertEqual(self.parser.tokenizer.findall('5+56'),
+                         [('5', '', '', ''), ('', '+', '', ''), ('56', '', '', '')])
+        self.assertEqual(self.parser.tokenizer.findall('xy'),
+                         [('', '', 'xy', '')])
+        self.assertEqual(self.parser.tokenizer.findall('5x'),
+                         [('5', '', '', ''), ('', '', 'x', '')])
 
     def test_incompatible_tokenizer(self):
         with self.assertRaises(RuntimeError) as ec:
@@ -142,11 +142,11 @@ class TdopParserTest(unittest.TestCase):
     def test_iter_method(self):
         token = self.parser.parse('9 + 7 - 5')
 
-        self.assertListEqual(list(tk.source for tk in token.iter()),
-                             ['9', '9 + 7', '7', '9 + 7 - 5', '5'])
-        self.assertListEqual(list(tk.source for tk in token.iter('(integer)')),
-                             ['9', '7', '5'])
-        self.assertListEqual(list(tk.source for tk in token.iter('(name)')), [])
+        self.assertEqual(list(tk.source for tk in token.iter()),
+                         ['9', '9 + 7', '7', '9 + 7 - 5', '5'])
+        self.assertEqual(list(tk.source for tk in token.iter('(integer)')),
+                         ['9', '7', '5'])
+        self.assertEqual(list(tk.source for tk in token.iter('(name)')), [])
 
         class SampleParser(Parser):
             pass
@@ -157,9 +157,9 @@ class TdopParserTest(unittest.TestCase):
 
         parser = SampleParser()
         token = parser.parse('.')
-        self.assertListEqual(list(tk.source for tk in token.iter()), ['.'])
-        self.assertListEqual(list(tk.source for tk in token.iter('.')), ['.'])
-        self.assertListEqual(list(tk.source for tk in token.iter('..')), [])
+        self.assertEqual(list(tk.source for tk in token.iter()), ['.'])
+        self.assertEqual(list(tk.source for tk in token.iter('.')), ['.'])
+        self.assertEqual(list(tk.source for tk in token.iter('..')), [])
 
     def test_syntax_errors(self):
         with self.assertRaises(ParseError) as ec:

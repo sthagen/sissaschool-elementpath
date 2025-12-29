@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -9,21 +9,53 @@
 #
 import re
 import math
+import operator
 from calendar import isleap, leapdays
-from collections.abc import Iterator
+from collections.abc import Mapping
 from decimal import Decimal
-from operator import attrgetter
-from typing import Any, Optional, overload, SupportsFloat, Union
+from typing import Any, Generic, Optional, SupportsFloat, SupportsIndex, TypeVar, Union
 from urllib.parse import urlsplit
 
 ###
 # Common sets constants
 OCCURRENCE_INDICATORS = frozenset(('?', '*', '+'))
 BOOLEAN_VALUES = frozenset(('true', 'false', '1', '0'))
-NUMERIC_INF_OR_NAN = frozenset(('INF', '-INF', 'NaN'))
+NUMERIC_INF_OR_NAN = frozenset(('INF', '-INF', '+INF', 'NaN'))
 INVALID_NUMERIC = frozenset(
     ('inf', '+inf', '-inf', 'nan', 'infinity', '+infinity', '-infinity')
 )
+
+MathArgType = Union[SupportsFloat, SupportsIndex]
+FloatArgType = Union[SupportsFloat, SupportsIndex, str]
+
+T = TypeVar('T')
+
+
+class Property(Generic[T]):
+    """A descriptor for managing protected class properties."""
+    __slots__ = ('_name', '_value')
+
+    def __init__(self, value: T) -> None:
+        self._value = value
+
+    def __set_name__(self, owner: type[Any], name: str) -> None:
+        self._name = name
+
+    def __get__(self, instance: Any, owner: type[Any]) -> T:
+        return self._value
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        raise AttributeError("Can't set attribute {}".format(self._name))
+
+    def __delete__(self, instance: Any) -> None:
+        raise AttributeError("Can't delete attribute {}".format(self._name))
+
+    def __repr__(self) -> str:
+        return f'{self.__class__.__name__}({self._value!r})'
+
+    @property
+    def value(self) -> T:
+        return self._value
 
 
 ###
@@ -36,18 +68,14 @@ class LazyPattern:
     """
     _compiled: re.Pattern[str]
 
+    __slots__ = ('_name', '_pattern', '_flags', '_compiled')
+
     def __init__(self, pattern: str, flags: Union[int, re.RegexFlag] = 0) -> None:
         self._pattern = pattern
         self._flags = flags
 
     def __set_name__(self, owner: type[Any], name: str) -> None:
         self._name = name
-
-    @overload
-    def __get__(self, instance: None, owner: type[Any]) -> re.Pattern[str]: ...
-
-    @overload
-    def __get__(self, instance: Any, owner: type[Any]) -> re.Pattern[str]: ...
 
     def __get__(self, instance: Optional[Any], owner: type[Any]) -> re.Pattern[str]:
         try:
@@ -61,6 +89,28 @@ class LazyPattern:
 
     def __delete__(self, instance: Any) -> None:
         raise AttributeError("Can't delete attribute {}".format(self._name))
+
+    @property
+    def groupindex(self) -> Mapping[str, int] | None:
+        try:
+            return self._compiled.groupindex
+        except AttributeError:
+            self._compiled = re.compile(self._pattern, self._flags)
+            return self._compiled.groupindex
+
+    def match(self, string: str) -> re.Match[str] | None:
+        try:
+            return self._compiled.match(string)
+        except AttributeError:
+            self._compiled = re.compile(self._pattern, self._flags)
+            return self._compiled.match(string)
+
+    def search(self, string: str) -> re.Match[str] | None:
+        try:
+            return self._compiled.search(string)
+        except AttributeError:
+            self._compiled = re.compile(self._pattern, self._flags)
+            return self._compiled.search(string)
 
 
 class Patterns:
@@ -113,22 +163,33 @@ def is_idrefs(value: Optional[str]) -> bool:
         all(Patterns.ncname.match(x) is not None for x in value.split())
 
 
-node_position = attrgetter('position')
+###
+# Operators
+node_position = operator.attrgetter('position')
+
+
+def reversed_sub(a: Any, b: Any) -> Any:
+    return operator.sub(b, a)
+
+
+def reversed_truediv(a: Any, b: Any) -> Any:
+    return operator.truediv(b, a)
 
 
 ###
 # Date/Time helpers
-MONTH_DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-MONTH_DAYS_LEAP = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+MONTH_DAYS = (0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+MONTH_DAYS_LEAP = (0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 
 
 def adjust_day(year: int, month: int, day: int) -> int:
-    if month in (1, 3, 5, 7, 8, 10, 12):
-        return day
-    elif month in (4, 6, 9, 11):
-        return min(day, 30)
-    else:
-        return min(day, 29) if isleap(year) else min(day, 28)
+    match month:
+        case 1 | 3 | 5 | 7 | 8 | 10 | 12:
+            return day
+        case 4 | 6 | 9 | 11:
+            return min(day, 30)
+        case _:
+            return min(day, 29) if isleap(year) else min(day, 28)
 
 
 def days_from_common_era(year: int) -> int:
@@ -137,13 +198,14 @@ def days_from_common_era(year: int) -> int:
     common era year the days are counted until the last day of December, for a
     BCE year the days are counted down from the end to the 1st of January.
     """
-    if year > 0:
-        return year * 365 + year // 4 - year // 100 + year // 400
-    elif year >= -1:
-        return year * 366
-    else:
-        year = -year - 1
-        return -(366 + year * 365 + year // 4 - year // 100 + year // 400)
+    match year:
+        case year if year > 0:
+            return year * 365 + year // 4 - year // 100 + year // 400
+        case year if year >= -1:
+            return year * 366
+        case _:
+            year = -year - 1
+            return -(366 + year * 365 + year // 4 - year // 100 + year // 400)
 
 
 DAYS_IN_4Y = days_from_common_era(4)
@@ -206,24 +268,23 @@ def is_xml_codepoint(cp: int) -> bool:
 
 
 def ordinal(n: int) -> str:
-    if n in (11, 12, 13):
-        return '%dth' % n
+    match n:
+        case 11 | 12 | 13:
+            return '%dth' % n
+        case n if n % 10 == 1:
+            return '%dst' % n
+        case n if n % 10 == 2:
+            return '%dnd' % n
+        case n if n % 10 == 3:
+            return '%drd' % n
+        case _:
+            return '%dth' % n
 
-    least_significant_digit = n % 10
-    if least_significant_digit == 1:
-        return '%dst' % n
-    elif least_significant_digit == 2:
-        return '%dnd' % n
-    elif least_significant_digit == 3:
-        return '%drd' % n
-    else:
-        return '%dth' % n
 
-
-def get_double(value: Union[SupportsFloat, str], xsd_version: str = '1.0') -> float:
+def get_double(value: FloatArgType, xsd_version: str | None = None) -> float:
     if isinstance(value, str):
         value = collapse_white_spaces(value)
-        if value in NUMERIC_INF_OR_NAN or xsd_version != '1.0' and value == '+INF':
+        if value in NUMERIC_INF_OR_NAN and (xsd_version != '1.0' or value != '+INF'):
             if value == 'NaN':
                 return math.nan  # for NaN use the predefined instance to keep identity
         elif value.lower() in INVALID_NUMERIC:
@@ -234,13 +295,13 @@ def get_double(value: Union[SupportsFloat, str], xsd_version: str = '1.0') -> fl
     return float(value)
 
 
-def numeric_equal(op1: SupportsFloat, op2: SupportsFloat) -> bool:
+def numeric_equal(op1: MathArgType, op2: MathArgType) -> bool:
     if op1 == op2:
         return True
     return math.isclose(op1, op2, rel_tol=1e-7, abs_tol=0.0)
 
 
-def numeric_not_equal(op1: SupportsFloat, op2: SupportsFloat) -> bool:
+def numeric_not_equal(op1: MathArgType, op2: MathArgType) -> bool:
     if op1 == op2:
         return False
     return not math.isclose(op1, op2, rel_tol=1e-7, abs_tol=0.0)
@@ -310,16 +371,6 @@ def unescape_json_string(s: str) -> str:
         replace('\\\\', '\\')
 
     return Patterns.unicode_escape.sub(unicode_escape_callback, s)
-
-
-def iter_sequence(obj: Any) -> Iterator[Any]:
-    if obj is None:
-        return
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from iter_sequence(item)
-    else:
-        yield obj
 
 
 def split_function_test(function_test: str) -> list[str]:

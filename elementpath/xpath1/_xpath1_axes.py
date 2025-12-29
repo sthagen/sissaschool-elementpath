@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -13,9 +13,10 @@ XPath 1.0 implementation - part 4 (axes)
 from collections.abc import Iterator
 from typing import cast
 
-from elementpath.xpath_nodes import ChildNodeType, AttributeNode, ElementNode, \
-    NamespaceNode, XPathNode, ParentNodeType
-from elementpath.xpath_context import ContextType, ItemType, XPathSchemaContext
+import elementpath.aliases as ta
+
+from elementpath.xpath_nodes import XPathNode, AttributeNode, ElementNode, NamespaceNode
+from elementpath.xpath_context import XPathSchemaContext
 from elementpath.xpath_tokens import XPathAxis
 
 from ._xpath1_functions import XPath1Parser
@@ -27,16 +28,17 @@ axis = XPath1Parser.axis
 
 
 @method(register('@', lbp=80, rbp=80, label="attribute reference"))
-def nud_attribute_reference(self: XPathAxis) -> XPathAxis:
+def nud__attribute_reference(self: XPathAxis) -> XPathAxis:
     self.parser.expected_next(
         '*', '(name)', ':', '{', 'Q{', message="invalid attribute specification")
     self[:] = self.parser.expression(rbp=80),
+    self.name = self[0].name
     return self
 
 
 @method('@')
 @method(axis('attribute'))
-def select_attribute_reference_or_axis(self: XPathAxis, context: ContextType = None) \
+def select__attribute_reference_or_axis(self: XPathAxis, context: ta.ContextType = None) \
         -> Iterator[AttributeNode]:
     if context is None:
         raise self.missing_context()
@@ -46,7 +48,7 @@ def select_attribute_reference_or_axis(self: XPathAxis, context: ContextType = N
 
 
 @method(axis('namespace'))
-def select_namespace_axis(self: XPathAxis, context: ContextType = None) \
+def select__namespace_axis(self: XPathAxis, context: ta.ContextType = None) \
         -> Iterator[NamespaceNode]:
     if context is None:
         raise self.missing_context()
@@ -59,14 +61,15 @@ def select_namespace_axis(self: XPathAxis, context: ContextType = None) \
         else:
             name = '*'
 
-        for context.item in elem.namespace_nodes:
-            if name == '*' or name == context.item.prefix:
-                yield context.item
+        for item in elem.namespace_nodes:
+            if name == '*' or name == item.prefix:
+                context.item = item
+                yield item
 
 
 @method(axis('self'))
-def select_self_axis(self: XPathAxis, context: ContextType = None) \
-        -> Iterator[ItemType]:
+def select__self_axis(self: XPathAxis, context: ta.ContextType = None) \
+        -> Iterator[ta.ItemType]:
     if context is None:
         raise self.missing_context()
     else:
@@ -75,8 +78,8 @@ def select_self_axis(self: XPathAxis, context: ContextType = None) \
 
 
 @method(axis('child'))
-def select_child_axis(self: XPathAxis, context: ContextType = None) \
-        -> Iterator[ItemType]:
+def select__child_axis(self: XPathAxis, context: ta.ContextType = None) \
+        -> Iterator[ta.ItemType]:
     if context is None:
         raise self.missing_context()
     else:
@@ -85,40 +88,40 @@ def select_child_axis(self: XPathAxis, context: ContextType = None) \
 
 
 @method(axis('parent', reverse_axis=True))
-def select_parent_axis(self: XPathAxis, context: ContextType = None) \
-        -> Iterator[ParentNodeType]:
+def select__parent_axis(self: XPathAxis, context: ta.ContextType = None) \
+        -> Iterator[ta.ParentNodeType]:
     if context is None:
         raise self.missing_context()
     else:
         for _ in context.iter_parent():
-            yield from cast(Iterator[ParentNodeType], self[0].select(context))
+            yield from cast(Iterator[ta.ParentNodeType], self[0].select(context))
 
 
 @method(axis('following-sibling'))
 @method(axis('preceding-sibling', reverse_axis=True))
-def select_sibling_axes(self: XPathAxis, context: ContextType = None) \
-        -> Iterator[ChildNodeType]:
+def select__sibling_axes(self: XPathAxis, context: ta.ContextType = None) \
+        -> Iterator[ta.ChildNodeType]:
     if context is None:
         raise self.missing_context()
     else:
         for _ in context.iter_siblings(axis=self.symbol):
-            yield from cast(Iterator[ChildNodeType], self[0].select(context))
+            yield from cast(Iterator[ta.ChildNodeType], self[0].select(context))
 
 
 @method(axis('ancestor', reverse_axis=True))
 @method(axis('ancestor-or-self', reverse_axis=True))
-def select_ancestor_axes(self: XPathAxis, context: ContextType = None) \
-        -> Iterator[ParentNodeType]:
+def select__ancestor_axes(self: XPathAxis, context: ta.ContextType = None) \
+        -> Iterator[ta.ParentNodeType]:
     if context is None:
         raise self.missing_context()
     else:
         for _ in context.iter_ancestors(axis=self.symbol):
-            yield from cast(Iterator[ParentNodeType], self[0].select(context))
+            yield from cast(Iterator[ta.ParentNodeType], self[0].select(context))
 
 
 @method(axis('descendant'))
 @method(axis('descendant-or-self'))
-def select_descendant_axes(self: XPathAxis, context: ContextType = None) \
+def select__descendant_axes(self: XPathAxis, context: ta.ContextType = None) \
         -> Iterator[XPathNode]:
     if context is None:
         raise self.missing_context()
@@ -128,20 +131,20 @@ def select_descendant_axes(self: XPathAxis, context: ContextType = None) \
 
 
 @method(axis('following'))
-def select_following_axis(self: XPathAxis, context: ContextType = None) \
-        -> Iterator[ChildNodeType]:
+def select__following_axis(self: XPathAxis, context: ta.ContextType = None) \
+        -> Iterator[ta.ChildNodeType]:
     if context is None:
         raise self.missing_context()
     else:
         for _ in context.iter_followings():
-            yield from cast(Iterator[ChildNodeType], self[0].select(context))
+            yield from cast(Iterator[ta.ChildNodeType], self[0].select(context))
 
 
 @method(axis('preceding', reverse_axis=True))
-def select_preceding_axis(self: XPathAxis, context: ContextType = None) \
-        -> Iterator[ChildNodeType]:
+def select__preceding_axis(self: XPathAxis, context: ta.ContextType = None) \
+        -> Iterator[ta.ChildNodeType]:
     if context is None:
         raise self.missing_context()
     else:
         for _ in context.iter_preceding():
-            yield from cast(Iterator[ChildNodeType], self[0].select(context))
+            yield from cast(Iterator[ta.ChildNodeType], self[0].select(context))

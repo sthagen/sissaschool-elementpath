@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2022, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -7,7 +7,7 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-__version__ = '5.0.4'
+__version__ = '5.1.0'
 __author__ = "Davide Brunato"
 __contact__ = "brunato@sissa.it"
 __copyright__ = "Copyright 2018-2025, SISSA"
@@ -41,12 +41,13 @@ from .regex import RegexError, translate_pattern, install_unicode_data, unicode_
 __all__ = ['datatypes', 'protocols', 'etree', 'ElementPathError', 'MissingContextError',
            'UnsupportedFeatureError', 'ElementPathKeyError',  'ElementPathLocaleError',
            'ElementPathZeroDivisionError', 'ElementPathNameError',
-           'ElementPathOverflowError', 'ElementPathRuntimeError', 'ElementPathSyntaxError',
-           'ElementPathTypeError', 'ElementPathValueError', 'XPathContext',
-           'XPathSchemaContext', 'XPathNode', 'AttributeNode', 'NamespaceNode',
-           'CommentNode', 'ProcessingInstructionNode', 'TextNode', 'ElementNode',
+           'ElementPathOverflowError', 'ElementPathRuntimeError',
+           'ElementPathSyntaxError', 'ElementPathTypeError', 'ElementPathValueError',
+           'XPathNode', 'AttributeNode', 'NamespaceNode', 'CommentNode',
+           'ProcessingInstructionNode', 'TextNode', 'ElementNode',
            'LazyElementNode', 'SchemaElementNode', 'DocumentNode', 'get_node_tree',
-           'build_node_tree', 'build_lxml_node_tree', 'build_schema_node_tree', 'XPathToken',
+           'build_node_tree', 'build_lxml_node_tree', 'build_schema_node_tree',
+           'XPathContext', 'XPathSchemaContext', 'XPathToken',
            'XPathFunction', 'XPath1Parser', 'XPath2Parser', 'select', 'iter_select',
            'Selector', 'AbstractSchemaProxy', 'RegexError', 'translate_pattern',
            'install_unicode_data', 'unicode_version']

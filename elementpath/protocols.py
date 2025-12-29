@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2021-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -8,7 +8,7 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 """
-Define type hints protocols for XPath related objects.
+Define protocols for type annotation of XPath related objects.
 """
 from collections.abc import Callable, Hashable, Iterator, Iterable, \
     ItemsView, Mapping, Sequence, Sized
@@ -283,19 +283,21 @@ class XsdGroupProtocol(XsdComponentProtocol, Protocol):
 class XsdAttributeProtocol(XsdComponentProtocol, Protocol):
 
     @property
-    def type(self) -> Optional[XsdTypeProtocol]: ...
+    def type(self) -> XsdTypeProtocol: ...
+
+
+class XsdAnyAttributeProtocol(XsdComponentProtocol, Protocol):
+
+    @property
+    def type(self) -> None: ...
+
+
+XsdAttributeProtocolType = Union[XsdAnyAttributeProtocol, XsdAttributeProtocol]
 
 
 class XsdAttributeGroupProtocol(XsdComponentProtocol, Protocol):
 
-    @overload
-    def get(self, key: Optional[str]) -> Optional[XsdAttributeProtocol]: ...
-
-    @overload
-    def get(self, key: Optional[str], default: _T) -> Union[XsdAttributeProtocol, _T]: ...
-
-    def get(self, key: Optional[str], default: Optional[_T] = None) \
-        -> Union[XsdAttributeProtocol, _T, None]: ...
+    def get(self, key: Optional[str], /) -> Optional[XsdAttributeProtocolType]: ...
 
     def items(self) -> ItemsView[Optional[str], XsdAttributeProtocol]: ...
 

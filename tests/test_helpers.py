@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -17,7 +17,7 @@ from xml.etree import ElementTree
 from elementpath.helpers import LazyPattern, days_from_common_era, \
     months2days, round_number, is_idrefs, collapse_white_spaces, escape_json_string, \
     get_double, numeric_equal, numeric_not_equal, equal, not_equal, \
-    match_wildcard, unescape_json_string, iter_sequence, split_function_test
+    match_wildcard, unescape_json_string, split_function_test
 from elementpath.xpath30.xpath30_helpers import decimal_to_string, int_to_roman, \
     int_to_month, int_to_weekday, int_to_words, int_to_alphabetic, week_in_month, \
     to_ordinal_en, to_ordinal_it, format_digits, ordinal_suffix
@@ -229,34 +229,26 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertEqual(unescape_json_string('-\\r-'), '-\r-')
         self.assertEqual(unescape_json_string("-\\t-"), '-\t-')
 
-    def test_iter_sequence_function(self):
-        self.assertListEqual(list(iter_sequence(None)), [])
-        self.assertListEqual(list(iter_sequence([None, 8])), [8])
-        self.assertListEqual(list(iter_sequence([])), [])
-        self.assertListEqual(list(iter_sequence([[], 8])), [8])
-        self.assertListEqual(list(iter_sequence([[], [], []])), [])
-        self.assertListEqual(list(iter_sequence([[], 8, [9]])), [8, 9])
-
     def test_split_function_test_function(self):
-        self.assertListEqual(
+        self.assertEqual(
             split_function_test('element(*)'), []
         )
-        self.assertListEqual(
+        self.assertEqual(
             split_function_test('function(*)'), ['*']
         )
-        self.assertListEqual(
+        self.assertEqual(
             split_function_test('function(item()) as xs:anyAtomicType'),
             ['item()', 'xs:anyAtomicType']
         )
-        self.assertListEqual(
+        self.assertEqual(
             split_function_test('function(xs:string) as xs:integer*'),
             ['xs:string', 'xs:integer*']
         )
-        self.assertListEqual(
+        self.assertEqual(
             split_function_test('function() as map(xs:string, item())'),
             ['map(xs:string, item())']
         )
-        self.assertListEqual(
+        self.assertEqual(
             split_function_test('function(item()*, item()*, item()*) as item()*'),
             ['item()*', 'item()*', 'item()*', 'item()*']
         )

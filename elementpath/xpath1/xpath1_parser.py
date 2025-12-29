@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -15,22 +15,22 @@ from abc import ABCMeta
 from collections.abc import Callable, MutableMapping, Sequence
 from typing import cast, Any, ClassVar, Optional, Union
 
-from elementpath.aliases import NamespacesType, NargsType
+import elementpath.aliases as ta
+
 from elementpath.exceptions import xpath_error, UnsupportedFeatureError, \
     ElementPathValueError, ElementPathNameError, ElementPathKeyError, MissingContextError
+from elementpath.namespaces import XML_NAMESPACE, XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE
 from elementpath.helpers import upper_camel_case
 from elementpath.collations import UNICODE_CODEPOINT_COLLATION
 from elementpath.datatypes import QName
 from elementpath.tdop import Parser
-from elementpath.namespaces import XML_NAMESPACE, XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE
 from elementpath.sequence_types import match_sequence_type
 from elementpath.schema_proxy import AbstractSchemaProxy
-from elementpath.xpath_context import ContextType
-from elementpath.xpath_tokens import XPathTokenType, XPathToken, XPathAxis, \
-    XPathFunction, ProxyToken
+from elementpath.xpath_tokens import XPathToken, XPathAxis, XPathFunction, ProxyToken, \
+    NameToken, PrefixedNameToken, BracedNameToken
 
 
-class XPath1Parser(Parser[XPathTokenType]):
+class XPath1Parser(Parser[ta.XPathTokenType]):
     """
     XPath 1.0 expression parser class. Provide a *namespaces* dictionary argument for
     mapping namespace prefixes to URI inside expressions. If *strict* is set to `False`
@@ -66,7 +66,7 @@ class XPath1Parser(Parser[XPathTokenType]):
     schema: Optional[AbstractSchemaProxy] = None
     variable_types: Optional[dict[str, str]] = None
     document_types: Optional[dict[str, str]] = None
-    collection_types: Optional[NamespacesType] = None
+    collection_types: Optional[ta.NamespacesType] = None
     default_collection_type: str = 'node()*'
     base_uri: Optional[str] = None
     function_namespace = XPATH_FUNCTIONS_NAMESPACE
@@ -90,7 +90,7 @@ class XPath1Parser(Parser[XPathTokenType]):
     def tracer(trace_data: str) -> None:
         """Trace data collector"""
 
-    def __init__(self, namespaces: Optional[NamespacesType] = None,
+    def __init__(self, namespaces: Optional[ta.NamespacesType] = None,
                  strict: bool = True) -> None:
         super(XPath1Parser, self).__init__()
         self.namespaces: dict[str, str] = self.DEFAULT_NAMESPACES.copy()
@@ -182,13 +182,13 @@ class XPath1Parser(Parser[XPathTokenType]):
     def function(cls, symbol: str,
                  prefix: Optional[str] = None,
                  label: str = 'function',
-                 nargs: NargsType = None,
+                 nargs: ta.NargsType = None,
                  sequence_types: tuple[str, ...] = (),
                  bp: int = 90) -> type[XPathFunction]:
         """
         Registers a token class for a symbol that represents an XPath function.
         """
-        kwargs = {
+        kwargs: dict[str, Any] = {
             'bases': (XPathFunction,),
             'label': label,
             'nargs': nargs,
@@ -284,6 +284,40 @@ class XPath1Parser(Parser[XPathTokenType]):
         else:
             raise self.next_token.wrong_syntax(message)
 
+    def parse_occurrence(self, token: XPathToken) -> None:
+        """Parse the occurrence for the current token."""
+        if self.next_token.symbol in ('*', '+', '?'):
+            assert self.token is token
+            token.occurrence = self.next_token.symbol
+            self.advance()
+            self.next_token.unexpected('*', '+', '?')
+
+    def parse_sequence_type(self) -> XPathToken:
+        if self.next_token.label in ('kind test', 'sequence type', 'function test'):
+            token = self.expression(rbp=85)
+        else:
+            if self.next_token.symbol == 'Q{':
+                token = self.advance().nud()
+            elif self.next_token.symbol != '(name)':
+                raise self.next_token.wrong_syntax()
+            else:
+                self.advance()
+                if self.next_token.symbol == ':':
+                    left = self.token
+                    self.advance()
+                    token = self.token.led(left)
+                else:
+                    token = self.token
+
+                if self.next_token.symbol in ('::', '('):
+                    raise self.next_token.wrong_syntax()
+
+        next_symbol = self.next_token.symbol
+        if token.symbol != 'empty-sequence' and next_symbol in ('?', '*', '+'):
+            token.occurrence = next_symbol
+            self.advance()
+        return token
+
     def check_variables(self, values: MutableMapping[str, Any]) -> None:
         """Checks the sequence types of the XPath dynamic context's variables."""
         for varname, value in values.items():
@@ -294,7 +328,7 @@ class XPath1Parser(Parser[XPathTokenType]):
                 raise xpath_error('XPDY0050', message)
 
     def get_function(self, name: str, arity: Optional[int],
-                     context: ContextType = None) -> XPathFunction:
+                     context: ta.ContextType = None) -> XPathFunction:
         """
         Returns an XPathFunction object suitable for stand-alone usage.
 
@@ -343,7 +377,7 @@ class XPath1Parser(Parser[XPathTokenType]):
     ###
     # Unsupported methods in XPath 1.0
     @classmethod
-    def constructor(cls, symbol: str, bp: int = 90, nargs: NargsType = 1,
+    def constructor(cls, symbol: str, bp: int = 90, nargs: ta.NargsType = 1,
                     sequence_types: Union[tuple[()], tuple[str, ...], list[str]] = (),
                     label: Union[str, tuple[str, ...]] = 'constructor function') \
             -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -376,12 +410,12 @@ class XPath1Parser(Parser[XPathTokenType]):
 # Special symbols
 XPath1Parser.register('(start)')
 XPath1Parser.register('(end)')
+XPath1Parser.register('(invalid)')
+XPath1Parser.register('(unknown)')
 XPath1Parser.literal('(string)')
 XPath1Parser.literal('(float)')
 XPath1Parser.literal('(decimal)')
 XPath1Parser.literal('(integer)')
-XPath1Parser.literal('(invalid)')
-XPath1Parser.register('(unknown)')
 
 ###
 # Simple symbols
@@ -390,5 +424,11 @@ XPath1Parser.register(')', bp=100)
 XPath1Parser.register(']')
 XPath1Parser.register('::')
 XPath1Parser.register('}')
+
+###
+# Name related tokens
+XPath1Parser.symbol_table['(name)'] = NameToken
+XPath1Parser.symbol_table[':'] = PrefixedNameToken
+XPath1Parser.symbol_table['{'] = BracedNameToken
 
 # XPath 1.0 definitions continue into module _xpath1_operators

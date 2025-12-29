@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2021, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -11,15 +11,14 @@
 XPath 3.1 implementation - part 2 (operators and constructors)
 """
 from collections.abc import Iterator, Iterable
-from typing import cast, Optional, Union
+from typing import cast, Union
 
-from elementpath.aliases import SequenceType
-from elementpath.helpers import iter_sequence
+import elementpath.aliases as ta
+
 from elementpath.sequence_types import is_sequence_type, match_sequence_type
-from elementpath.xpath_tokens import XPathParserType, XPathToken, ProxyToken, \
-    XPathFunction, XPathMap, XPathArray
-from elementpath.datatypes import AtomicType
-from elementpath.xpath_context import ContextType, ItemType, ValueType
+from elementpath.xpath_tokens import XPathToken, ProxyToken, XPathFunction, \
+    XPathMap, XPathArray
+from elementpath.sequences import xlist
 
 from .xpath31_parser import XPath31Parser
 
@@ -34,7 +33,7 @@ register('map', bp=90, label=('kind test', 'map'), bases=(XPathFunction,),
 
 
 @method('map')
-def nud_map_sequence_type_or_constructor(self: XPathFunction) \
+def nud__map_sequence_type_or_constructor(self: XPathFunction) \
         -> Union[XPathToken, XPathMap, XPathArray]:
     if self.parser.next_token.symbol == '{':
         self.parser.token = XPathMap(self.parser).nud()
@@ -48,14 +47,14 @@ def nud_map_sequence_type_or_constructor(self: XPathFunction) \
     if self.parser.next_token.label not in ('kind test', 'sequence type', 'function test'):
         self.parser.expected_next('(name)', ':', '*', message='a QName or a wildcard expected')
     self[:] = self.parser.expression(45),
-    self[0].parse_occurrence()
+    self.parser.parse_occurrence(self[0])
 
     if self[0].symbol != '*':
         self.parser.advance(',')
         if self.parser.next_token.label not in ('kind test', 'sequence type', 'function test'):
             self.parser.expected_next('(name)', ':', '*', message='a QName or a wildcard expected')
         self.append(self.parser.expression(45))
-        self[-1].parse_occurrence()
+        self.parser.parse_occurrence(self[-1])
 
     self.parser.advance(')')
     return self
@@ -66,7 +65,7 @@ register('array', bp=90, label=('kind test', 'array'), bases=(XPathFunction,),
 
 
 @method('array')
-def nud_sequence_type_or_curly_array_constructor(self: XPathFunction) -> XPathToken:
+def nud__sequence_type_or_curly_array_constructor(self: XPathFunction) -> XPathToken:
     if self.parser.next_token.symbol == '{':
         self.parser.token = XPathArray(self.parser).nud()
         return self.parser.token
@@ -79,15 +78,15 @@ def nud_sequence_type_or_curly_array_constructor(self: XPathFunction) -> XPathTo
         self.parser.expected_next('(name)', ':', '*', 'item')
     self[:] = self.parser.expression(45),
     if self[0].symbol != '*':
-        self[0].parse_occurrence()
+        self.parser.parse_occurrence(self[0])
     self.parser.advance(')')
-    self.parse_occurrence()
+    self.parser.parse_occurrence(self)
     return self
 
 
 @method('map')
 @method('array')
-def select_map_or_array_kind_test(self: XPathFunction, context: ContextType = None) \
+def select__map_or_array_kind_test(self: XPathFunction, context: ta.ContextType = None) \
         -> Iterator[Union[XPathMap, XPathArray]]:
     if context is None:
         raise self.missing_context()
@@ -100,7 +99,7 @@ def select_map_or_array_kind_test(self: XPathFunction, context: ContextType = No
 ###
 # Square array constructor (pushed lazy)
 @method('[')
-def nud_square_array_constructor(self: XPathToken) -> XPathToken:
+def nud__square_array_constructor(self: XPathToken) -> XPathToken:
     if self.parser.version < '3.1':
         raise self.wrong_syntax()
 
@@ -127,7 +126,7 @@ class LookupOperatorToken(XPathToken):
     lbp = 85
     rbp = 85
 
-    def __init__(self, parser: XPathParserType, value: Optional[AtomicType] = None) -> None:
+    def __init__(self, parser: ta.XPathParserType, value: ta.AtomicType | None = None) -> None:
         super().__init__(parser, value)
         if self.parser.token.symbol in ('(', ','):
             # It's a placeholder symbol or a unary lookup operator
@@ -158,7 +157,7 @@ class LookupOperatorToken(XPathToken):
         try:
             self.parser.expected_next('(name)', '(integer)', '(', '*')
         except SyntaxError:
-            if is_sequence_type(left.value, self.parser):
+            if isinstance(left.value, str) and is_sequence_type(left.value, self.parser):
                 self.lbp = self.rbp = 0
                 left.occurrence = '?'
                 return left
@@ -167,25 +166,28 @@ class LookupOperatorToken(XPathToken):
             self[:] = left, self.parser.expression(85)
             return self
 
-    def evaluate(self, context: ContextType = None) -> SequenceType[ItemType]:
+    def evaluate(self, context: ta.ContextType = None) -> ta.OneOrMore[ta.ItemType]:
         if not self:
-            return self.value  # a placeholder token
-        return [x for x in self.select(context)]
+            return self.symbol  # a placeholder token
+        return xlist(self.select(context))
 
-    def select(self, context: ContextType = None) -> Iterator[ItemType]:
+    def select(self, context: ta.ContextType = None) -> Iterator[ta.ItemType]:
 
         # flatten sequences, don't flatten arrays.
-        def flatten(v: ValueType) -> Iterator[ItemType]:
+        def flatten(v: ta.ValueType) -> Iterator[ta.ItemType]:
             if isinstance(v, list):
                 yield from v
             else:
                 yield v
 
         if not self:
-            yield from iter_sequence(self.value)
+            if isinstance(self.value, list):
+                yield from self.value
+            else:
+                yield self.value
             return
 
-        items: Iterable[ItemType]
+        items: Iterable[ta.ItemType]
         if len(self) == 1:
             # unary lookup operator (used in predicates)
             if context is None:
@@ -221,7 +223,7 @@ class LookupOperatorToken(XPathToken):
                     for value in self[-1].select(context):
                         yield from flatten(item(self.data_value(value), context=context))
 
-            elif not item and isinstance(item, list):
+            elif item == ():
                 continue
             else:
                 raise self.error('XPTY0004')
@@ -231,7 +233,7 @@ XPath31Parser.symbol_table['?'] = LookupOperatorToken
 
 
 @method('=>', bp=67)
-def led_arrow_operator(self: XPathToken, left: XPathToken) -> XPathToken:
+def led__arrow_operator(self: XPathToken, left: XPathToken) -> XPathToken:
     next_token = self.parser.next_token
     if next_token.symbol == '$':
         self[:] = left, self.parser.expression(80)
@@ -258,8 +260,8 @@ def led_arrow_operator(self: XPathToken, left: XPathToken) -> XPathToken:
 
 
 @method('=>')
-def evaluate_arrow_operator(self: XPathToken, context: ContextType = None) \
-        -> SequenceType[ItemType]:
+def evaluate__arrow_operator(self: XPathToken, context: ta.ContextType = None) \
+        -> ta.ValueType:
     tokens = [self[0]]
     if self[2]:
         tokens.extend(self[2][0].get_argument_tokens())
