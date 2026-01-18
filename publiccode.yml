@@ -43,7 +43,7 @@ description:
       Python library that provides XPath 1.0/2.0/3.0/3.1 parsers and selectors 
       for ElementTree and lxml
     longDescription: |
-      This is a library for Python 3.9+ that provides XPath 1.0, 2.0, 3.0 and 3.1
+      This is a library for Python 3.10+ that provides XPath 1.0, 2.0, 3.0 and 3.1
       selectors for Python's ElementTree XML data structures, both for the
       standard **ElementTree** library and for the **lxml** library. For lxml
       this package can be useful for providing XPath 2.0+ selectors, because lxml
