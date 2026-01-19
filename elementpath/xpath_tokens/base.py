@@ -670,7 +670,7 @@ class XPathToken(Token[ta.XPathTokenType]):
         if self.symbol in ('(name)', '*') or isinstance(self, self.registry.proxy_token):
             pass
         elif namespace == self.parser.function_namespace:
-            if self.label != 'function':
+            if self.label != 'function' and self.label != 'external function':
                 msg = "a name, a wildcard or a function expected"
                 raise self.wrong_syntax(msg, code='XPST0017')
             elif isinstance(self.label, MultiLabel):

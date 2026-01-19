@@ -15,20 +15,19 @@ from abc import ABCMeta
 import locale
 from collections.abc import Callable, MutableMapping
 from urllib.parse import urlparse
-from typing import cast, Any, ClassVar, Optional, Union
+from typing import Any, ClassVar, cast
 
 import elementpath.aliases as ta
 
-from elementpath.helpers import upper_camel_case, is_ncname, ordinal
-from elementpath.exceptions import ElementPathTypeError, \
-    ElementPathValueError, MissingContextError, xpath_error
+from elementpath.helpers import upper_camel_case, is_ncname
+from elementpath.exceptions import ElementPathTypeError, ElementPathValueError, xpath_error
 from elementpath.namespaces import XML_NAMESPACE, XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, \
     XQT_ERRORS_NAMESPACE, XSD_NOTATION, XSD_ANY_ATOMIC_TYPE
 from elementpath.namespaces import get_prefixed_name
 from elementpath.datatypes import QName, builtin_atomic_types
 from elementpath.collations import UNICODE_COLLATION_BASE_URI, UNICODE_CODEPOINT_COLLATION
-from elementpath.xpath_tokens import XPathToken, ProxyToken, XPathFunction, XPathConstructor
-from elementpath.xpath_context import XPathContext, XPathSchemaContext
+from elementpath.xpath_tokens import XPathToken, ProxyToken, XPathFunction, \
+    XPathConstructor, SchemaConstructor, ExternalFunction
 from elementpath.sequence_types import is_sequence_type, match_sequence_type
 from elementpath.schema_proxy import AbstractSchemaProxy
 from elementpath.xpath1 import XPath1Parser
@@ -94,8 +93,7 @@ class XPath2Parser(XPath1Parser):
         'schema-element', 'text', 'typeswitch',
     }
 
-    function_signatures: dict[tuple[QName, int], str] \
-        = XPath1Parser.function_signatures.copy()
+    function_signatures: dict[tuple[QName, int], str] = XPath1Parser.function_signatures.copy()
     namespaces: dict[str, str]
     token: XPathToken
     next_token: XPathToken
@@ -244,8 +242,8 @@ class XPath2Parser(XPath1Parser):
 
     @classmethod
     def constructor(cls, symbol: str, bp: int = 90, nargs: ta.NargsType = 1,
-                    sequence_types: Union[tuple[()], tuple[str, ...], list[str]] = (),
-                    label: Union[str, tuple[str, ...]] = 'constructor function') \
+                    sequence_types: tuple[()] | tuple[str, ...] | list[str] = (),
+                    label: str | tuple[str, ...] = 'constructor function') \
             -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """
         Statically creates a constructor token class, that is registered in the globals
@@ -276,62 +274,61 @@ class XPath2Parser(XPath1Parser):
             return func
         return bind
 
-    def schema_constructor(self, atomic_type_name: str, bp: int = 90) \
-            -> type[XPathFunction]:
-        """Dynamically registers a token class for a schema atomic type constructor function."""
+    def dynamic_register(self, symbol: str, class_name: str, **kwargs: Any) \
+            -> type[ta.XPathTokenType]:
+        """
+        Register/update a token class in the symbol table of a parser instance.
+
+        :param symbol: The identifier symbol for the new class.
+        :param class_name: The name of the new class.
+        :param kwargs: Optional attributes/methods for the token class.
+        :return: A token class.
+        """
+        kwargs['symbol'] = symbol
+        if 'lookup_name' not in kwargs:
+            lookup_name = kwargs['lookup_name'] = symbol
+        else:
+            lookup_name = kwargs['lookup_name']
+
+        if 'label' not in kwargs:
+            kwargs['label'] = 'symbol'
+
+        token_class_bases = kwargs.get('bases', (self.token_base_class,))
+        kwargs.update({
+            '__module__': self.__module__,
+            '__qualname__': class_name,
+            '__return__': None
+        })
+        token_class = cast(
+            type[ta.XPathTokenType],
+            cast(object, ABCMeta(class_name, token_class_bases, kwargs))
+        )
+
+        if self.symbol_table is self.__class__.symbol_table:
+            self.symbol_table = copy.copy(self.symbol_table)
+        self.symbol_table[lookup_name] = token_class
+        self.tokenizer = None
+        return token_class
+
+    def schema_constructor(self, atomic_type_name: str, bp: int = 90) -> type[XPathFunction]:
+        """
+        Dynamically register a token class for a schema atomic type constructor function.
+        """
         if atomic_type_name in (XSD_ANY_ATOMIC_TYPE, XSD_NOTATION):
             raise xpath_error('XPST0080')
 
-        def nud_(self_: XPathFunction) -> XPathFunction:
-            self_.parser.advance('(')
-            self_[0:] = self_.parser.expression(5),
-            self_.parser.advance(')')
-
-            try:
-                self_.evaluate()  # for static context evaluation
-            except MissingContextError:
-                pass
-            return self_
-
-        def evaluate_(self_: XPathFunction, context: XPathContext | None = None) \
-                -> ta.OneAtomicOrEmpty:
-            arg = self_.get_argument(context)
-            if arg is None or self_.parser.schema is None:
-                return []
-
-            value = self_.string_value(arg)
-            try:
-                return self_.parser.schema.cast_as(value, atomic_type_name)
-            except (TypeError, ValueError) as err:
-                if isinstance(context, XPathSchemaContext):
-                    return []
-                raise self_.error('FORG0001', err)
-
         symbol = get_prefixed_name(atomic_type_name, self.namespaces)
-        token_class_name = "_%sConstructorFunction" % symbol.replace(':', '_')
+        class_name = "_%sConstructorFunction" % symbol.replace(':', '_')
         kwargs = {
-            'symbol': symbol,
+            'bases': (SchemaConstructor,),
+            'name': atomic_type_name,
             'nargs': 1,
             'label': 'constructor function',
             'pattern': r'\b%s(?=\s*\(|\s*\(\:.*\:\)\()' % symbol,
             'lbp': bp,
             'rbp': bp,
-            'nud': nud_,
-            'evaluate': evaluate_,
-            '__module__': self.__module__,
-            '__qualname__': token_class_name,
-            '__return__': None
         }
-        token_class = cast(
-            type[XPathFunction], ABCMeta(token_class_name, (XPathFunction,), kwargs)
-        )
-
-        if self.symbol_table is self.__class__.symbol_table:
-            self.symbol_table = copy.copy(self.symbol_table)
-        self.symbol_table[symbol] = token_class
-        self.tokenizer = None
-
-        return token_class
+        return cast(type[XPathFunction], self.dynamic_register(symbol, class_name, **kwargs))
 
     def external_function(self,
                           callback: Callable[..., Any],
@@ -367,117 +364,79 @@ class XPath2Parser(XPath1Parser):
             namespace = XPATH_FUNCTIONS_NAMESPACE
             qname = QName(XPATH_FUNCTIONS_NAMESPACE, f'fn:{symbol}')
 
-        class_name = f'{upper_camel_case(qname.qname)}ExternalFunction'
-        lookup_name = qname.expanded_name
-
-        if self.symbol_table is self.__class__.symbol_table:
-            self.symbol_table = copy.copy(self.symbol_table)
-
-        if lookup_name in self.symbol_table:
-            msg = f'function {qname.qname!r} is already registered'
-            raise ElementPathValueError(msg)
-        elif symbol not in self.symbol_table or \
-                not issubclass(self.symbol_table[symbol], ProxyToken):
-
-            if symbol in self.symbol_table:
-                token_cls = self.symbol_table[symbol]
-                if not issubclass(token_cls, XPathFunction) \
-                        or token_cls.label == 'kind test':
-                    msg = f'{symbol!r} name collides with {token_cls!r}'
-                    raise ElementPathValueError(msg)
-                if namespace == token_cls.namespace:
-                    msg = f'function {qname.qname!r} is already registered'
-                    raise ElementPathValueError(msg)
-
-                # Move the token class before register the proxy token
-                self.symbol_table[f'{{{token_cls.namespace}}}{symbol}'] = token_cls
-
-            token_class_name = f'{upper_camel_case(qname.local_name)}FunctionProxy'
-            kwargs = {
-                'class_name': token_class_name,
-                'symbol': symbol,
-                'label': 'function',
-                'lbp': bp,
-                'rbp': bp,
-                '__module__': self.__module__,
-                '__qualname__': token_class_name,
-                '__return__': None
-            }
-            self.symbol_table[symbol] = cast(
-                type[ProxyToken], ABCMeta(class_name, (ProxyToken,), kwargs)
-            )
-
-        def evaluate_external_function(self_: XPathFunction,
-                                       context: Optional[XPathContext] = None) -> Any:
-            args = []
-            for k in range(len(self_)):
-                try:
-                    if sequence_types[k][-1] in '+*':
-                        arg = self_[k].evaluate(context)
-                    else:
-                        arg = self_.get_argument(context, index=k)
-                except IndexError:
-                    arg = self_.get_argument(context, index=k)
-                args.append(arg)
-
-            if sequence_types:
-                for k, (arg, st) in enumerate(zip(args, sequence_types), start=1):
-                    if not match_sequence_type(arg, st, self):
-                        msg_ = f"{ordinal(k)} argument does not match sequence type {st!r}"
-                        raise xpath_error('XPDY0050', msg_)
-
-                result = callback(*args)
-                if not match_sequence_type(result, sequence_types[-1], self):
-                    msg_ = f"Result does not match sequence type {sequence_types[-1]!r}"
-                    raise xpath_error('XPDY0050', msg_)
-                return result
-
-            return callback(*args)
-
-        kwargs = {
-            'class_name': class_name,
-            'symbol': symbol,
-            'namespace': namespace,
-            'label': 'external function',
-            'nargs': nargs,
-            'lbp': bp,
-            'rbp': bp,
-            'evaluate': evaluate_external_function,
-            '__module__': self.__module__,
-            '__qualname__': class_name,
-            '__return__': None
-        }
+        function_signatures: dict[tuple[QName, int], str] = {}
         if sequence_types:
-            # Register function signature(s)
-            kwargs['sequence_types'] = sequence_types
-            if self.function_signatures is self.__class__.function_signatures:
-                self.function_signatures = dict(self.__class__.function_signatures)
-
             if nargs is None:
-                pass  # pragma: no cover
+                assert len(sequence_types) == 1
+                function_signatures[(qname, 0)] = f'function() as {sequence_types[0]}'
             elif isinstance(nargs, int):
                 assert len(sequence_types) == nargs + 1
-                self.function_signatures[(qname, nargs)] = 'function({}) as {}'.format(
+                function_signatures[(qname, nargs)] = 'function({}) as {}'.format(
                     ', '.join(sequence_types[:-1]), sequence_types[-1]
                 )
             elif nargs[1] is None:
                 assert len(sequence_types) == nargs[0] + 1
-                self.function_signatures[(qname, nargs[0])] = 'function({}, ...) as {}'.format(
+                function_signatures[(qname, nargs[0])] = 'function({}, ...) as {}'.format(
                     ', '.join(sequence_types[:-1]), sequence_types[-1]
                 )
             else:
                 assert len(sequence_types) == nargs[1] + 1
                 for arity in range(nargs[0], nargs[1] + 1):
-                    self.function_signatures[(qname, arity)] = 'function({}) as {}'.format(
+                    function_signatures[(qname, arity)] = 'function({}) as {}'.format(
                         ', '.join(sequence_types[:arity]), sequence_types[-1]
                     )
 
-        token_class = cast(
-            type[XPathFunction], ABCMeta(class_name, (XPathFunction,), kwargs)
-        )
-        self.symbol_table[lookup_name] = token_class
-        self.tokenizer = None
-        return token_class
+        if qname.expanded_name in self.symbol_table:
+            msg = f'function {qname.qname!r} is already registered'
+            raise ElementPathValueError(msg)
+        elif symbol not in self.symbol_table:
+            lookup_name = symbol
+        else:
+            lookup_name = qname.expanded_name
+            token_class = self.symbol_table[symbol]
+            if issubclass(token_class, ProxyToken):
+                pass
+            elif namespace == token_class.namespace:
+                msg = f'function {qname.qname!r} is already registered'
+                raise ElementPathValueError(msg)
+            elif not issubclass(token_class, XPathFunction) \
+                    or token_class.label == 'kind test':
+                msg = f'{symbol!r} name collides with {token_class!r}'
+                raise ElementPathValueError(msg)
+            else:
+                # Register a new proxy token, moving the already present token class to
+                # qualified name.
+                self.symbol_table[f'{{{token_class.namespace}}}{symbol}'] = token_class
+                class_name = f'{upper_camel_case(qname.local_name)}FunctionProxy'
+                kwargs = {
+                    'bases': (ProxyToken,),
+                    'label': 'function',
+                    'lbp': bp,
+                    'rbp': bp,
+                }
+                self.dynamic_register(symbol, class_name, **kwargs)
+
+        class_name = f'{upper_camel_case(qname.qname)}ExternalFunction'
+        kwargs = {
+            'lookup_name': lookup_name,
+            'bases': (ExternalFunction,),
+            'namespace': namespace,
+            'label': 'external function',
+            'nargs': nargs,
+            'lbp': bp,
+            'rbp': bp,
+            'sequence_types': sequence_types,
+            'callback': staticmethod(callback),
+        }
+        token_class = self.dynamic_register(symbol, class_name, **kwargs)
+
+        if function_signatures:
+            # Register function signatures
+            if self.function_signatures is self.__class__.function_signatures:
+                self.function_signatures = dict(self.__class__.function_signatures)
+            self.function_signatures.update(function_signatures)
+
+        return cast(type[XPathFunction], token_class)
 
     def is_schema_bound(self) -> bool:
         return self.schema is not None and 'symbol_table' in self.__dict__

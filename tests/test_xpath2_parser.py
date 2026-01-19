@@ -26,6 +26,7 @@ import os
 from decimal import Decimal
 from textwrap import dedent
 import xml.etree.ElementTree as ET
+from types import ModuleType
 
 from elementpath import XPath2Parser, XPathContext, XPathSchemaContext, \
     MissingContextError, ElementNode, select, iter_select, get_node_tree, XPathFunction
@@ -45,17 +46,16 @@ try:
     import lxml.etree as lxml_etree
     import lxml.html as lxml_html
 except ImportError:
-    lxml_etree = None
-    lxml_html = None
+    lxml_etree: ModuleType | None = None
+    lxml_html: ModuleType | None = None
 
 try:
     import xmlschema
-    from xmlschema.xpath import XMLSchemaProxy
 except ImportError:
-    xmlschema = None
-    XMLSchemaProxy = None
+    xmlschema: ModuleType | None = None
 else:
-    xmlschema.XMLSchema.meta_schema.build()
+    xmlschema.XMLSchema10.meta_schema.build()
+    xmlschema.XMLSchema11.meta_schema.build()
 
 
 def get_sequence_type(value, xsd_version='1.0'):
@@ -1298,13 +1298,12 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.assertIsNot(parser.symbol_table, parser.__class__.symbol_table)
 
         self.assertIn('foo', parser.symbol_table)
-        token_class = parser.symbol_table['foo']
-        self.assertTrue(issubclass(token_class, ProxyToken))
+        self.assertNotIn(f'{{{XPATH_FUNCTIONS_NAMESPACE}}}foo', parser.symbol_table)
 
-        symbol = f'{{{XPATH_FUNCTIONS_NAMESPACE}}}foo'
-        self.assertIn(symbol, parser.symbol_table)
-        token_class = parser.symbol_table[symbol]
+        token_class = parser.symbol_table['foo']
+        self.assertFalse(issubclass(token_class, ProxyToken))
         self.assertTrue(issubclass(token_class, XPathFunction))
+
         assert issubclass(token_class, XPathFunction)
         self.assertEqual(token_class.nargs, 1)
 
@@ -1314,8 +1313,9 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         token = parser.parse('fn:foo("abc")')
         self.assertEqual(token.evaluate(), 'abc')
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             parser.external_function(foo)
+        self.assertEqual(str(ctx.exception), "function 'fn:foo' is already registered")
 
         parser.external_function(foo, name='bar')
         token = parser.parse('bar(99)')
@@ -1483,7 +1483,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         assert date_node.xsd_type is None
         assert date_node.typed_value == '2018-01-23'
 
-        schema_proxy = XMLSchemaProxy(schema)
+        schema_proxy = xmlschema.xpath.XMLSchemaProxy(schema)
         parser = XPath2Parser(schema=schema_proxy)
 
         assert date_node.xsd_type is None
@@ -1544,6 +1544,29 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
         results = select(root, 'min(.//row/count(entry))', parser=self.parser.__class__)
         self.assertEqual(results, 1)
+
+    def test_external_function_namespace_registration__issue_099(self):
+        parser = self.parser.__class__({"test": "http://www.test.org/1"})
+        test_elem = ET.Element("{http://www.test.org/1}item1")
+        context = XPathContext(
+            root=ET.Element("{http://www.test.org/1}item"),
+            variables={"result": test_elem}
+        )
+
+        expr = """$result instance of element(test:item1) """
+        root_token = parser.parse(expr)
+        self.assertTrue(root_token.get_results(context))
+
+        def testfunc(root: ElementNode) -> ElementNode:
+            raise NotImplementedError
+
+        parser.external_function(testfunc, "item2", "fn", ("element()", "element()"))
+        root_token = parser.parse(expr)
+        self.assertTrue(root_token.get_results(context))
+
+        parser.external_function(testfunc, "item1", "fn", ("element()", "element()"))
+        root_token = parser.parse(expr)
+        self.assertTrue(root_token.get_results(context))
 
 
 @unittest.skipIf(lxml_etree is None, "The lxml library is not installed")

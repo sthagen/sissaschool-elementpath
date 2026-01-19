@@ -19,17 +19,19 @@ from elementpath.datatypes import UntypedAtomic, QName
 
 from .base import XPathToken
 from .axes import XPathAxis
-from .functions import XPathFunction
-from .contructors import XPathConstructor
+from .functions import XPathFunction, ExternalFunction
+from .contructors import XPathConstructor, SchemaConstructor
 from .maps import XPathMap
 from .arrays import XPathArray
 from .tokens import ValueToken, ProxyToken, NameToken, PrefixedNameToken, \
-    BracedNameToken, VariableToken, AsteriskToken, ParentShortcutToken, ContextItemToken
+    BracedNameToken, VariableToken, AsteriskToken, ParentShortcutToken, \
+    ContextItemToken
 
 __all__ = ['XPathToken', 'XPathAxis', 'XPathFunction', 'XPathConstructor',
            'XPathMap', 'XPathArray', 'ValueToken', 'ProxyToken', 'NameToken',
            'PrefixedNameToken', 'BracedNameToken', 'VariableToken', 'AsteriskToken',
-           'ParentShortcutToken', 'ContextItemToken', 'TokenRegistry']
+           'ParentShortcutToken', 'ContextItemToken', 'SchemaConstructor',
+           'ExternalFunction', 'TokenRegistry']
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +42,9 @@ class TokenRegistry:
     base_token: type[XPathToken] = XPathToken
     axis_token: type[XPathAxis] = XPathAxis
     function_token: type[XPathFunction] = XPathFunction
+    external_function_token: type[ExternalFunction] = ExternalFunction
     constructor_token: type[XPathConstructor] = XPathConstructor
+    schema_constructor_token: type[SchemaConstructor] = SchemaConstructor
     array_token: type[XPathArray] = XPathArray
     map_token: type[XPathMap] = XPathMap
 

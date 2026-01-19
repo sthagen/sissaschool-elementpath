@@ -18,7 +18,7 @@ from elementpath.datatypes import QName, AnyAtomicType
 from elementpath.tdop import MultiLabel
 from elementpath.namespaces import XSD_NAMESPACE, XPATH_FUNCTIONS_NAMESPACE, \
     XPATH_MATH_FUNCTIONS_NAMESPACE
-from elementpath.helpers import split_function_test
+from elementpath.helpers import split_function_test, ordinal
 from elementpath.sequences import xlist
 from elementpath.etree import is_etree_document, is_etree_element
 from elementpath.sequence_types import match_sequence_type, is_sequence_type_restriction
@@ -392,3 +392,33 @@ class XPathFunction(XPathToken):
                 if context is not None:
                     context.item = item
                 yield item
+
+
+class ExternalFunction(XPathFunction):
+    callback: Callable[..., Any]
+
+    def evaluate(self, context: ta.ContextType = None) -> Any:
+        args = []
+        for k in range(len(self)):
+            try:
+                if self.sequence_types[k][-1] in '+*':
+                    arg = self[k].evaluate(context)
+                else:
+                    arg = self.get_argument(context, index=k)
+            except IndexError:
+                arg = self.get_argument(context, index=k)
+            args.append(arg)
+
+        if self.sequence_types:
+            for k, (arg, st) in enumerate(zip(args, self.sequence_types), start=1):
+                if not match_sequence_type(arg, st, self.parser):
+                    msg = f"{ordinal(k)} argument does not match sequence type {st!r}"
+                    raise self.error('XPDY0050', msg)
+
+            result = self.callback(*args)
+            if not match_sequence_type(result, self.sequence_types[-1], self.parser):
+                msg = f"Result does not match sequence type {self.sequence_types[-1]!r}"
+                raise self.error('XPDY0050', msg)
+            return result
+
+        return self.callback(*args)

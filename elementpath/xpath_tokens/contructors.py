@@ -11,7 +11,7 @@ from typing import Any
 
 import elementpath.aliases as ta
 
-from elementpath.exceptions import ElementPathError
+from elementpath.exceptions import ElementPathError, MissingContextError
 from elementpath.datatypes import AnyAtomicType, ListType, UntypedAtomic
 from elementpath.xpath_context import XPathContext, XPathSchemaContext
 from .functions import XPathFunction
@@ -65,3 +65,38 @@ class XPathConstructor(XPathFunction):
             if isinstance(context, XPathSchemaContext):
                 return []
             raise self.error('FORG0001', err) from None
+
+
+class SchemaConstructor(XPathFunction):
+    """
+    A token for processing XPath 2.0+ constructors defined by schema atomic types.
+    """
+    type_class: type[AnyAtomicType | ListType]
+
+    @staticmethod
+    def cast(value: Any) -> ta.AtomicType:
+        raise NotImplementedError()
+
+    def nud(self) -> 'SchemaConstructor':
+        self.parser.advance('(')
+        self[0:] = self.parser.expression(5),
+        self.parser.advance(')')
+
+        try:
+            self.evaluate()  # for static context evaluation
+        except MissingContextError:
+            pass
+        return self
+
+    def evaluate(self, context: ta.ContextType = None) -> ta.OneAtomicOrEmpty:
+        arg = self.get_argument(context)
+        if arg is None or self.parser.schema is None:
+            return []
+
+        value = self.string_value(arg)
+        try:
+            return self.parser.schema.cast_as(value, self.name)
+        except (TypeError, ValueError) as err:
+            if isinstance(context, XPathSchemaContext):
+                return []
+            raise self.error('FORG0001', err)
