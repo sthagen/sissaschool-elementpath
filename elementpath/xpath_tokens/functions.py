@@ -236,7 +236,7 @@ class XPathFunction(XPathToken):
         if not self.parser.parse_arguments:
             return self
 
-        code = 'XPST0017' if self.label == 'function' else 'XPST0003'
+        code = 'XPST0017' if 'function' in self.label else 'XPST0003'
         self.parser.advance('(')
         if self.nargs is None:
             del self._items[:]

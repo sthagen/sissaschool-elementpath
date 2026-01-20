@@ -28,7 +28,8 @@ from elementpath.datatypes import QName, builtin_atomic_types
 from elementpath.collations import UNICODE_COLLATION_BASE_URI, UNICODE_CODEPOINT_COLLATION
 from elementpath.xpath_tokens import XPathToken, ProxyToken, XPathFunction, \
     XPathConstructor, SchemaConstructor, ExternalFunction
-from elementpath.sequence_types import is_sequence_type, match_sequence_type
+from elementpath.sequence_types import get_function_signatures, is_sequence_type, \
+    match_sequence_type
 from elementpath.schema_proxy import AbstractSchemaProxy
 from elementpath.xpath1 import XPath1Parser
 
@@ -274,7 +275,7 @@ class XPath2Parser(XPath1Parser):
             return func
         return bind
 
-    def dynamic_register(self, symbol: str, class_name: str, **kwargs: Any) \
+    def _register(self, symbol: str, class_name: str, **kwargs: Any) \
             -> type[ta.XPathTokenType]:
         """
         Register/update a token class in the symbol table of a parser instance.
@@ -328,7 +329,7 @@ class XPath2Parser(XPath1Parser):
             'lbp': bp,
             'rbp': bp,
         }
-        return cast(type[XPathFunction], self.dynamic_register(symbol, class_name, **kwargs))
+        return cast(type[XPathFunction], self._register(symbol, class_name, **kwargs))
 
     def external_function(self,
                           callback: Callable[..., Any],
@@ -364,27 +365,7 @@ class XPath2Parser(XPath1Parser):
             namespace = XPATH_FUNCTIONS_NAMESPACE
             qname = QName(XPATH_FUNCTIONS_NAMESPACE, f'fn:{symbol}')
 
-        function_signatures: dict[tuple[QName, int], str] = {}
-        if sequence_types:
-            if nargs is None:
-                assert len(sequence_types) == 1
-                function_signatures[(qname, 0)] = f'function() as {sequence_types[0]}'
-            elif isinstance(nargs, int):
-                assert len(sequence_types) == nargs + 1
-                function_signatures[(qname, nargs)] = 'function({}) as {}'.format(
-                    ', '.join(sequence_types[:-1]), sequence_types[-1]
-                )
-            elif nargs[1] is None:
-                assert len(sequence_types) == nargs[0] + 1
-                function_signatures[(qname, nargs[0])] = 'function({}, ...) as {}'.format(
-                    ', '.join(sequence_types[:-1]), sequence_types[-1]
-                )
-            else:
-                assert len(sequence_types) == nargs[1] + 1
-                for arity in range(nargs[0], nargs[1] + 1):
-                    function_signatures[(qname, arity)] = 'function({}) as {}'.format(
-                        ', '.join(sequence_types[:arity]), sequence_types[-1]
-                    )
+        function_signatures = get_function_signatures(qname, nargs, sequence_types)
 
         if qname.expanded_name in self.symbol_table:
             msg = f'function {qname.qname!r} is already registered'
@@ -414,7 +395,7 @@ class XPath2Parser(XPath1Parser):
                     'lbp': bp,
                     'rbp': bp,
                 }
-                self.dynamic_register(symbol, class_name, **kwargs)
+                self._register(symbol, class_name, **kwargs)
 
         class_name = f'{upper_camel_case(qname.qname)}ExternalFunction'
         kwargs = {
@@ -428,7 +409,7 @@ class XPath2Parser(XPath1Parser):
             'sequence_types': sequence_types,
             'callback': staticmethod(callback),
         }
-        token_class = self.dynamic_register(symbol, class_name, **kwargs)
+        token_class = self._register(symbol, class_name, **kwargs)
 
         if function_signatures:
             # Register function signatures

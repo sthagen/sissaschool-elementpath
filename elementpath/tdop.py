@@ -14,9 +14,9 @@ import sys
 import re
 from abc import ABCMeta
 from collections.abc import Callable, Iterator, MutableMapping, MutableSequence
-from unicodedata import name as unicode_name
 from decimal import Decimal, DecimalException
 from typing import Any, cast, overload, Generic, TypeVar
+from unicodedata import name as unicode_name
 
 #
 # Simple top-down parser based on Vaughan Pratt's algorithm (Top Down Operator Precedence).
@@ -49,7 +49,7 @@ class ParseError(SyntaxError):
     """An error when parsing source with TDOP parser."""
 
 
-def _symbol_to_classname(symbol: str) -> str:
+def symbol_to_classname(symbol: str) -> str:
     """
     Converts a symbol string to an identifier (only alphanumeric and '_').
     """
@@ -693,7 +693,7 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
                     token_class_name = kwargs.pop('class_name')
                 else:
                     token_class_name = "_%s%s" % (
-                        _symbol_to_classname(symbol),
+                        symbol_to_classname(symbol),
                         str(label).title().replace(' ', '')
                     )
 
@@ -713,8 +713,13 @@ class Parser(Generic[TK_co], metaclass=ParserMeta):
             raise TypeError("A string or a %r subclass requested, not %r." % (Token, symbol))
         else:
             token_class = symbol
-            if cls.symbol_table.get(symbol.lookup_name) is not token_class:
-                raise ValueError("Token class %r is not registered." % token_class)
+            lookup_name = token_class.lookup_name
+
+            if lookup_name not in cls.symbol_table:
+                cls.symbol_table[lookup_name] = token_class
+            elif cls.symbol_table[lookup_name] is not token_class:
+                msg = "Token class {!r} collide on key {!r} with a different token class."
+                raise ValueError(msg.format(token_class, lookup_name))
 
         for key, value in kwargs.items():
             if key == 'lbp' and value > token_class.lbp:

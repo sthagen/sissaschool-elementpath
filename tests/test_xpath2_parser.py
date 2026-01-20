@@ -1288,7 +1288,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.check_selector('//@*/name()', root, result)
 
     def test_external_function_registration(self):
-        parser = self.parser.__class__()
+        parser = self.parser.__class__(namespaces={'tns0': 'https://elementpath.test/tns0'})
 
         def foo(x):
             return str(x)
@@ -1305,6 +1305,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.assertTrue(issubclass(token_class, XPathFunction))
 
         assert issubclass(token_class, XPathFunction)
+        self.assertEqual(token_class.lookup_name, 'foo')
         self.assertEqual(token_class.nargs, 1)
 
         token = parser.parse('foo(8)')
@@ -1338,6 +1339,33 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
             parser.external_function(foo, 'some')
         self.assertIn("'some' name collides with <class", str(ctx.exception))
 
+        def foo2(x, y):
+            return str(x) + str(y)
+
+        parser.external_function(foo2, 'foo', prefix='tns0')
+
+        self.assertIn('foo', parser.symbol_table)
+        self.assertIn(f'{{{XPATH_FUNCTIONS_NAMESPACE}}}foo', parser.symbol_table)
+        self.assertIn('{https://elementpath.test/tns0}foo', parser.symbol_table)
+
+        token_class = parser.symbol_table['foo']
+        self.assertTrue(issubclass(token_class, ProxyToken))
+        self.assertFalse(issubclass(token_class, XPathFunction))
+
+        assert issubclass(token_class, ProxyToken)
+        self.assertEqual(token_class.lookup_name, 'foo')
+
+        token = parser.parse('foo(8)')
+        self.assertEqual(token.evaluate(), '8')
+
+        with self.assertRaises(TypeError) as ctx:
+            parser.parse('tns0:foo(8)')
+        self.assertIn("'tns0:foo' external function: Too few argument", str(ctx.exception))
+
+        token = parser.parse('tns0:foo(8, 9)')
+
+        self.assertEqual(token.evaluate(), '89')
+
     def test_external_function_arity(self):
 
         def foo():
@@ -1347,7 +1375,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         token_class = parser.external_function(foo)
         self.assertEqual(token_class.nargs, 0)
         self.assertEqual(parser.parse('foo()').evaluate(), 'bar')
-        self.assertRaises(SyntaxError, parser.parse, 'foo(1)')
+        self.assertRaises(TypeError, parser.parse, 'foo(1)')
 
         def foo(x):
             return str(x)
@@ -1366,7 +1394,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.assertEqual(token_class.nargs, 2)
         self.assertEqual(parser.parse('foo(77, 88)').evaluate(), '7788')
         self.assertRaises(TypeError, parser.parse, 'foo()')
-        self.assertRaises(SyntaxError, parser.parse, 'foo(6)')
+        self.assertRaises(TypeError, parser.parse, 'foo(6)')
 
         def foo(x, y=0):
             return str(x) + str(y)
@@ -1387,7 +1415,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.assertEqual(parser.parse('foo(77, 88)').evaluate(), '7788')
         self.assertEqual(parser.parse('foo(6)').evaluate(), '60')
         self.assertEqual(parser.parse('foo()').evaluate(), '00')
-        self.assertRaises(SyntaxError, parser.parse, 'foo(1, 2, 3)')
+        self.assertRaises(TypeError, parser.parse, 'foo(1, 2, 3)')
 
         def foo(x, *args):
             return str(x) + ''.join(str(a) for a in args)
@@ -1407,7 +1435,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.assertIsNone(token_class.nargs)
         self.assertEqual(parser.parse('foo(7, 8, 9)').evaluate(), '789')
         self.assertEqual(parser.parse('foo(6)').evaluate(), '6')
-        self.assertRaises(SyntaxError, parser.parse, 'foo()')
+        self.assertRaises(TypeError, parser.parse, 'foo()')
 
     def test_external_function_arguments(self):
 

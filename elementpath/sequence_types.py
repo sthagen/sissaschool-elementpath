@@ -15,7 +15,7 @@ import elementpath.aliases as ta
 
 from elementpath.datatypes import builtin_atomic_types, builtin_list_types, QName, \
     NumericProxy, AnyAtomicType
-from elementpath.exceptions import ElementPathKeyError, xpath_error
+from elementpath.exceptions import ElementPathKeyError, ElementPathValueError, xpath_error
 from elementpath.namespaces import XSD_NAMESPACE, XSD_ERROR, XSD_DATETIME_STAMP, \
     XSD_NUMERIC, XSD_UNTYPED, XSD_UNTYPED_ATOMIC, get_expanded_name
 from elementpath.helpers import collapse_white_spaces, Patterns
@@ -34,6 +34,53 @@ COMMON_SEQUENCE_TYPES = frozenset((
 XSD11_ONLY_TYPES = frozenset(
     (XSD_ERROR, XSD_DATETIME_STAMP, 'xs:error', 'xs:dateTimeStamp')
 )
+
+
+def get_function_signatures(qname: QName,
+                            nargs: ta.NargsType,
+                            sequence_types: tuple[str, ...] = ()) -> dict[tuple[QName, int], str]:
+    """
+    Returns the signatures for a function.
+
+    :param qname: A QName instance that represents the FQDN of the function.
+    :param nargs: The number of arguments that the function takes, could the `None`, \
+    a non-negative integer or a couple non-negative integers or a non-negative integer \
+    followed by `None`.
+    :param sequence_types: A sequence of sequence type specifications, must match \
+    the number of arguments that the function takes plus the return type.
+    """
+    function_signatures: dict[tuple[QName, int], str] = {}
+    if not sequence_types:
+        return function_signatures
+
+    if any(not is_sequence_type(st) for st in sequence_types):
+        msg = "Error in provided sequence types: {!r}"
+        raise ElementPathValueError(msg.format(sequence_types))
+    elif nargs is None:
+        if len(sequence_types) != 1:
+            raise ElementPathValueError("Mismatched number of sequence types provided")
+        function_signatures[(qname, 0)] = f'function() as {sequence_types[0]}'
+    elif isinstance(nargs, int):
+        if len(sequence_types) != nargs + 1:
+            raise ElementPathValueError("Mismatched number of sequence types provided")
+        function_signatures[(qname, nargs)] = 'function({}) as {}'.format(
+            ', '.join(sequence_types[:-1]), sequence_types[-1]
+        )
+    elif nargs[1] is None:
+        if len(sequence_types) != nargs[0] + 1:
+            raise ElementPathValueError("Mismatched number of sequence types provided")
+        function_signatures[(qname, nargs[0])] = 'function({}, ...) as {}'.format(
+            ', '.join(sequence_types[:-1]), sequence_types[-1]
+        )
+    else:
+        if len(sequence_types) != nargs[1] + 1:
+            raise ElementPathValueError("Mismatched number of sequence types provided")
+        for arity in range(nargs[0], nargs[1] + 1):
+            function_signatures[(qname, arity)] = 'function({}) as {}'.format(
+                ', '.join(sequence_types[:arity]), sequence_types[-1]
+            )
+
+    return function_signatures
 
 
 ###

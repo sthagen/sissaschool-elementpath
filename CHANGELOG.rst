@@ -2,6 +2,11 @@
 CHANGELOG
 *********
 
+`v5.1.1`_ (2025-01-20)
+======================
+* Fix external function registrations (issue #099)
+* Add ExternalFunction and SchemaConstructor token classes
+
 `v5.1.0`_ (2025-12-28)
 ======================
 * Drop Python 3.9 compatibility and add Pyton 3.15 support
@@ -531,3 +536,4 @@ CHANGELOG
 .. _v5.0.3: https://github.com/sissaschool/elementpath/compare/v5.0.2...v5.0.3
 .. _v5.0.4: https://github.com/sissaschool/elementpath/compare/v5.0.3...v5.0.4
 .. _v5.1.0: https://github.com/sissaschool/elementpath/compare/v5.0.4...v5.1.0
+.. _v5.1.1: https://github.com/sissaschool/elementpath/compare/v5.1.0...v5.1.1
