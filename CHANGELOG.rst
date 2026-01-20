@@ -2,7 +2,7 @@
 CHANGELOG
 *********
 
-`v5.1.1`_ (2025-01-20)
+`v5.1.1`_ (2026-01-20)
 ======================
 * Fix external function registrations (issue #099)
 * Add ExternalFunction and SchemaConstructor token classes
