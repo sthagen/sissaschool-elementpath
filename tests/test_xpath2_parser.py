@@ -1287,7 +1287,7 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
         self.check_selector('//@*/local-name()', root, result)
         self.check_selector('//@*/name()', root, result)
 
-    def test_external_function_registration(self):
+    def test_external_function_registration__issue_099(self):
         parser = self.parser.__class__(namespaces={'tns0': 'https://elementpath.test/tns0'})
 
         def foo(x):
@@ -1354,6 +1354,20 @@ class XPath2ParserTest(test_xpath1_parser.XPath1ParserTest):
 
         assert issubclass(token_class, ProxyToken)
         self.assertEqual(token_class.lookup_name, 'foo')
+        self.assertFalse(hasattr(token_class, 'nargs'))
+        self.assertIsNone(token_class.namespace)
+
+        token_class = parser.symbol_table['{https://elementpath.test/tns0}foo']
+        self.assertTrue(issubclass(token_class, XPathFunction))
+
+        assert issubclass(token_class, XPathFunction)
+        self.assertEqual(token_class.lookup_name, '{https://elementpath.test/tns0}foo')
+        self.assertEqual(token_class.nargs, 2)
+        self.assertEqual(token_class.namespace, 'https://elementpath.test/tns0')
+
+        with self.assertRaises(ValueError) as ctx:
+            parser.external_function(foo2, 'foo', prefix='tns0')
+        self.assertEqual(str(ctx.exception), "function 'tns0:foo' is already registered")
 
         token = parser.parse('foo(8)')
         self.assertEqual(token.evaluate(), '8')
