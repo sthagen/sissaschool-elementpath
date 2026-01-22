@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2026, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -13,7 +13,7 @@ import re
 import sys
 from collections import namedtuple
 
-from elementpath.tdop import _symbol_to_classname, ParseError, Token, \
+from elementpath.tdop import symbol_to_classname, ParseError, Token, \
     ParserMeta, Parser, MultiLabel
 
 
@@ -68,21 +68,21 @@ class TdopParserTest(unittest.TestCase):
         self.assertFalse(label.endswith('constructor'))
 
     def test_symbol_to_classname_function(self):
-        self.assertEqual(_symbol_to_classname('_cat10'), 'Cat10')
-        self.assertEqual(_symbol_to_classname('&'), 'Ampersand')
-        self.assertEqual(_symbol_to_classname('('), 'LeftParenthesis')
-        self.assertEqual(_symbol_to_classname(')'), 'RightParenthesis')
+        self.assertEqual(symbol_to_classname('_cat10'), 'Cat10')
+        self.assertEqual(symbol_to_classname('&'), 'Ampersand')
+        self.assertEqual(symbol_to_classname('('), 'LeftParenthesis')
+        self.assertEqual(symbol_to_classname(')'), 'RightParenthesis')
 
-        self.assertEqual(_symbol_to_classname('(name)'), 'Name')
-        self.assertEqual(_symbol_to_classname('(name'), 'LeftParenthesisname')
+        self.assertEqual(symbol_to_classname('(name)'), 'Name')
+        self.assertEqual(symbol_to_classname('(name'), 'LeftParenthesisname')
 
-        self.assertEqual(_symbol_to_classname('-'), 'HyphenMinus')
-        self.assertEqual(_symbol_to_classname('_'), 'LowLine')
-        self.assertEqual(_symbol_to_classname('-_'), 'HyphenMinusLowLine')
-        self.assertEqual(_symbol_to_classname('--'), 'HyphenMinusHyphenMinus')
+        self.assertEqual(symbol_to_classname('-'), 'HyphenMinus')
+        self.assertEqual(symbol_to_classname('_'), 'LowLine')
+        self.assertEqual(symbol_to_classname('-_'), 'HyphenMinusLowLine')
+        self.assertEqual(symbol_to_classname('--'), 'HyphenMinusHyphenMinus')
 
-        self.assertEqual(_symbol_to_classname('my-api-call'), 'MyApiCall')
-        self.assertEqual(_symbol_to_classname('call-'), 'Call')
+        self.assertEqual(symbol_to_classname('my-api-call'), 'MyApiCall')
+        self.assertEqual(symbol_to_classname('call-'), 'Call')
 
     def test_create_tokenizer_method(self):
         FakeToken = namedtuple('Token', 'symbol pattern label')
@@ -336,10 +336,13 @@ class TdopParserTest(unittest.TestCase):
             AnotherParser.register(9)
         self.assertIn("A string or a", str(ec.exception))
 
+        AnotherParser.register(self.parser.symbol_table['+'])
+        AnotherParser.symbol_table['-'] = self.parser.symbol_table['+']
+
         with self.assertRaises(ValueError) as ec:
-            AnotherParser.register(self.parser.symbol_table['+'])
+            AnotherParser.register(self.parser.symbol_table['-'])
         self.assertIn("Token class ", str(ec.exception))
-        self.assertIn("is not registered", str(ec.exception))
+        self.assertIn("collide", str(ec.exception))
 
     def test_other_operators(self):
 

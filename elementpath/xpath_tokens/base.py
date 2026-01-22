@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2026, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -670,7 +670,7 @@ class XPathToken(Token[ta.XPathTokenType]):
         if self.symbol in ('(name)', '*') or isinstance(self, self.registry.proxy_token):
             pass
         elif namespace == self.parser.function_namespace:
-            if self.label != 'function':
+            if self.label != 'function' and self.label != 'external function':
                 msg = "a name, a wildcard or a function expected"
                 raise self.wrong_syntax(msg, code='XPST0017')
             elif isinstance(self.label, MultiLabel):

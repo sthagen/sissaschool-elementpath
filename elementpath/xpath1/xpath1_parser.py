@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2018-2025, SISSA (International School for Advanced Studies).
+# Copyright (c), 2018-2026, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -24,7 +24,7 @@ from elementpath.helpers import upper_camel_case
 from elementpath.collations import UNICODE_CODEPOINT_COLLATION
 from elementpath.datatypes import QName
 from elementpath.tdop import Parser
-from elementpath.sequence_types import match_sequence_type
+from elementpath.sequence_types import get_function_signatures, match_sequence_type
 from elementpath.schema_proxy import AbstractSchemaProxy
 from elementpath.xpath_tokens import XPathToken, XPathAxis, XPathFunction, ProxyToken, \
     NameToken, PrefixedNameToken, BracedNameToken
@@ -218,26 +218,10 @@ class XPath1Parser(Parser[ta.XPathTokenType]):
 
         if sequence_types:
             # Register function signature(s)
+            cls.function_signatures.update(
+                get_function_signatures(qname, nargs, sequence_types)
+            )
             kwargs['sequence_types'] = sequence_types
-
-            if nargs is None:
-                pass  # pragma: no cover
-            elif isinstance(nargs, int):
-                assert len(sequence_types) == nargs + 1
-                cls.function_signatures[(qname, nargs)] = 'function({}) as {}'.format(
-                    ', '.join(sequence_types[:-1]), sequence_types[-1]
-                )
-            elif nargs[1] is None:
-                assert len(sequence_types) == nargs[0] + 1
-                cls.function_signatures[(qname, nargs[0])] = 'function({}, ...) as {}'.format(
-                    ', '.join(sequence_types[:-1]), sequence_types[-1]
-                )
-            else:
-                assert len(sequence_types) == nargs[1] + 1
-                for arity in range(nargs[0], nargs[1] + 1):
-                    cls.function_signatures[(qname, arity)] = 'function({}) as {}'.format(
-                        ', '.join(sequence_types[:arity]), sequence_types[-1]
-                    )
 
         return cast(type[XPathFunction], cls.register(symbol, **kwargs))
 
