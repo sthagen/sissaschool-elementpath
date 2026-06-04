@@ -7,6 +7,7 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
+import sys
 from abc import ABCMeta, abstractmethod
 from types import MappingProxyType
 from typing import Any
@@ -58,7 +59,7 @@ class AtomicTypeMeta(ABCMeta):
             extended_name = f'{{{namespace}}}{name}' if namespace else name
             prefixed_name = f'{prefix}:{name}' if prefix else name
 
-            if not cls.__doc__:
+            if not cls.__doc__ and sys.flags.optimize < 2:
                 if ver := getattr(cls, '_xsd_version', ''):
                     ver = ver + ' '
                 params = getattr(cls, '__init__', None).__doc__ or ''
