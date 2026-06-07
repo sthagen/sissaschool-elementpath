@@ -38,6 +38,31 @@ SER_PARAM_STANDALONE = '{%s}standalone' % XSLT_XQUERY_SERIALIZATION_NAMESPACE
 SER_PARAM_ITEM_SEPARATOR = '{%s}item-separator' % XSLT_XQUERY_SERIALIZATION_NAMESPACE
 
 
+class MapEncodingDict(dict[AnyAtomicType | None, Any]):
+    """
+    A bridge dict-type for encoding XPath maps to JSON.
+    """
+    def __init__(self, items: Any) -> None:
+        self[None] = None
+        self._items = items
+
+    def __getitem__(self, key: AnyAtomicType | None, /) -> Any:
+        for k, v in self._items:
+            if key == k:
+                return v
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[AnyAtomicType | None]:
+        for k, _ in self._items:
+            yield k
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def items(self) -> Any:
+        return self._items
+
+
 def get_serialization_params(params: Union[None, ElementNode, XPathMap] = None,
                              token: Optional[XPathToken] = None) -> dict['str', Any]:
 
@@ -336,14 +361,6 @@ def serialize_to_json(elements: Iterable[Any],
                       **params: Any) -> str:
     if etree_module is None:
         etree_module = ElementTree
-
-    class MapEncodingDict(dict):  # type: ignore[type-arg]
-        def __init__(self, items: Any) -> None:
-            self[None] = None
-            self._items = items
-
-        def items(self) -> Any:
-            return self._items
 
     class XPathEncoder(json.JSONEncoder):
 
