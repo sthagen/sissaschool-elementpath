@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator, MutableSet
 from itertools import chain
 from typing import AbstractSet, Any, Optional, Union
 
+from elementpath.helpers import LazyPattern
 from .codepoints import RegexError
 from .unicode_subsets import UnicodeSubset, lazy_subset, unicode_subset, unicode_category
 
@@ -87,6 +88,29 @@ CHARACTER_ESCAPES: dict[str, Union[str, Callable[[], UnicodeSubset]]] = {
     '\\W': w_shortcut,
 }
 
+re_char_set = LazyPattern(r'(\\[nrt|.\-^?*+{}()\]sSdDiIcCwW]|\\[pP]{[a-zA-Z\-0-9]+})')
+
+
+def get_charset_parts(charset: str) -> list[str]:
+    parts: list[str] = []
+    prev = ''
+    for part in re_char_set.split(charset):
+        if not part:
+            continue
+        elif part.endswith('-') and part != '\\-':
+            prev = part
+        elif part.startswith('-') and parts:
+            parts[-1] += prev + part
+            prev = ''
+        else:
+            parts.append(prev + part)
+            prev = ''
+    else:
+        if prev:
+            parts.append(prev)
+
+    return parts
+
 
 class CharacterClass(MutableSet[int]):
     """
@@ -96,7 +120,7 @@ class CharacterClass(MutableSet[int]):
     :param xsd_version: the reference XSD version for syntax variants. Defaults to '1.0'.
     TODO: implement __ior__, __iand__, __ixor__ operators for a full mutable set class.
     """
-    _re_char_set = re.compile(r'(?<!.-)(\\[nrt|.\-^?*+{}()\]sSdDiIcCwW]|\\[pP]{[a-zA-Z\-0-9]+})')
+    _re_char_set = re.compile(r'(\\[nrt|.\-^?*+{}()\]sSdDiIcCwW]|\\[pP]{[a-zA-Z\-0-9]+})')
     _re_unicode_ref = re.compile(r'\\([pP]){([\w-]+)}')
 
     __slots__ = 'xsd_version', 'positive', 'negative'
@@ -172,7 +196,7 @@ class CharacterClass(MutableSet[int]):
         if isinstance(charset, int):
             charset = chr(charset)
 
-        for part in self._re_char_set.split(charset):
+        for part in get_charset_parts(charset):
             if part in CHARACTER_ESCAPES:
                 value = CHARACTER_ESCAPES[part]
                 if isinstance(value, str):
@@ -204,7 +228,7 @@ class CharacterClass(MutableSet[int]):
         if isinstance(charset, int):
             charset = chr(charset)
 
-        for part in self._re_char_set.split(charset):
+        for part in get_charset_parts(charset):
             if part in CHARACTER_ESCAPES:
                 value = CHARACTER_ESCAPES[part]
                 if isinstance(value, str):
