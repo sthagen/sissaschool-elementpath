@@ -32,7 +32,7 @@ class UntypedAtomic(AnyAtomicType):
     name = 'untypedAtomic'
     value: str
 
-    __slots__ = ('value', '_xsd_version', 'parser')
+    __slots__ = ('value', 'parser')
 
     @classmethod
     def make(cls, value: Any, **kwargs: Any) -> 'UntypedAtomic':

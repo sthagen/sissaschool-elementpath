@@ -227,10 +227,8 @@ class XPathFunction(XPathToken):
         else:
             return None
 
-    def is_reference(self) -> int:
-        if not isinstance(self.nargs, int):
-            return False
-        return self.nargs and not len(self._items)
+    def is_reference(self) -> bool:
+        return isinstance(self.nargs, int) and self.nargs != 0 and not self._items
 
     def nud(self) -> 'XPathFunction':
         if not self.parser.parse_arguments:

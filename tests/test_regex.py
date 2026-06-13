@@ -799,6 +799,10 @@ class TestPatterns(unittest.TestCase):
         self.assertIsNone(pattern.search('first\tsecond\tthird'))
         self.assertEqual(pattern.search('first second third').group(0), 'first second third')
 
+    def test_issue_100(self):
+        self.assertNotIn('\\s', translate_pattern(r"[\s\-',]{1,255}"))
+        self.assertNotIn('\\s', translate_pattern(r"[\-\s',]{1,255}"))
+
     def test_dot_wildcard(self):
         regex = translate_pattern('.+', anchors=False)
         self.assertEqual(regex, '^([^\\r\\n]+)$(?!\\n\\Z)')

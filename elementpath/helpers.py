@@ -112,6 +112,13 @@ class LazyPattern:
             self._compiled = re.compile(self._pattern, self._flags)
             return self._compiled.search(string)
 
+    def split(self, string: str) -> list[str]:
+        try:
+            return self._compiled.split(string)
+        except AttributeError:
+            self._compiled = re.compile(self._pattern, self._flags)
+            return self._compiled.split(string)
+
 
 class Patterns:
     """

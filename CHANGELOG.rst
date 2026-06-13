@@ -2,6 +2,11 @@
 CHANGELOG
 *********
 
+`v5.1.2`_ (2026-06-13)
+======================
+* Include PR #101 (invalid sequence type error code for external functions)
+* Fix issues #100 and #102
+
 `v5.1.1`_ (2026-01-20)
 ======================
 * Fix external function registrations (issue #099)
@@ -537,3 +542,4 @@ CHANGELOG
 .. _v5.0.4: https://github.com/sissaschool/elementpath/compare/v5.0.3...v5.0.4
 .. _v5.1.0: https://github.com/sissaschool/elementpath/compare/v5.0.4...v5.1.0
 .. _v5.1.1: https://github.com/sissaschool/elementpath/compare/v5.1.0...v5.1.1
+.. _v5.1.2: https://github.com/sissaschool/elementpath/compare/v5.1.1...v5.1.2

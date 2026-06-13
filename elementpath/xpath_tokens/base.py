@@ -154,6 +154,10 @@ class XPathToken(Token[ta.XPathTokenType]):
             return True
         return not self._items[1].label.endswith('function')
 
+    def is_reference(self) -> bool:
+        """Is `True` if the token is a function reference, `False` otherwise."""
+        return False
+
     ###
     # Tokens tree analysis methods
     def iter_leaf_elements(self) -> Iterator[str]:
@@ -321,7 +325,7 @@ class XPathToken(Token[ta.XPathTokenType]):
             else:
                 return default
         else:
-            if isinstance(token, XPathToken) and callable(token) and token.is_reference():
+            if token.is_reference():
                 return token  # It's a function reference
 
             item = None
